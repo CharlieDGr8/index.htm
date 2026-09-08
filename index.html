@@ -10,9 +10,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Cypher Protocol">
 <link rel="manifest" href="./manifest.webmanifest">
-<link rel="apple-touch-icon" sizes="180x180" href="./icon-180.png?v=2">
-<link rel="apple-touch-icon-precomposed" sizes="180x180" href="./icon-180.png?v=2">
-<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png?v=2">
+<link rel="apple-touch-icon" sizes="180x180" href="./icon-180.png?v=3">
+<link rel="apple-touch-icon-precomposed" sizes="180x180" href="./icon-180.png?v=3">
+<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png?v=3">
 <style>
   html,body{margin:0;padding:0;background:#080C10;}
   #boot{display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -138,8 +138,10 @@ const APP_CSS = `
 .cp-btn:focus-visible,.cp-secHead:focus-visible{outline:2px solid var(--amber);outline-offset:2px;}
 .cp-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .cp-g2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.cp-chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 9px;
-  border-radius:999px;border:1px solid var(--rule);color:var(--mute);}
+.cp-chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:5px 11px;
+  border-radius:999px;border:1px solid var(--rule);color:var(--mute);
+  background:transparent;font-family:inherit;cursor:pointer;}
+.cp-chip--on{color:var(--amber);border-color:#5A431B;background:rgba(233,166,60,.12);}
 .cp-chip--Planned{color:#8FB6CF;border-color:#2E4A5C;}
 .cp-chip--Active{color:var(--amber);border-color:#5A431B;background:rgba(233,166,60,.08);}
 .cp-chip--Closed{color:var(--mute);border-color:var(--rule);}
@@ -312,16 +314,19 @@ const clockOf = iso => {
     return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 const dayOf = iso => dateStamp(new Date(iso));
+/* CP-YYYYMMDD-NNN. The date is the day the case was opened; NNN is a running
+   count of every case ever opened, so it keeps climbing across days. Numbers
+   are never reused, even after a case is deleted. */
 function nextCaseNumber(index) {
-    const stamp = compactStamp();
-    const prefix = `CP-${stamp}-`;
+    const prefix = `CP-${compactStamp()}-`;
     let max = 0;
     for (const c of index) {
-        if (c.caseNumber && c.caseNumber.startsWith(prefix)) {
-            const n = parseInt(c.caseNumber.slice(prefix.length), 10);
-            if (!isNaN(n) && n > max)
-                max = n;
-        }
+        if (!c.caseNumber)
+            continue;
+        const tail = String(c.caseNumber).split("-").pop(); // the NNN, whatever the date
+        const n = parseInt(tail, 10);
+        if (!isNaN(n) && n > max)
+            max = n;
     }
     return `${prefix}${pad(max + 1, 3)}`;
 }
@@ -1295,7 +1300,7 @@ const sealInk = (size, colour = "#0B0E12") => `<svg viewBox="0 0 64 64" xmlns="h
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 const esc = v => String(v !== null && v !== void 0 ? v : "").replace(/[&<>"]/g, c => ESCAPES[c] || c);
 const para = v => esc(v).replace(/\n/g, "<br>");
-const NIL = `<span class="nil">nil</span>`;
+const NIL = `<span class="nil">N/A</span>`;
 const val = v => (v !== undefined && v !== null && String(v).trim() !== "") ? para(v) : NIL;
 const DOSSIER_CSS = `
 @page { size: letter; margin: 0.55in 0.6in 0.6in; }
@@ -1328,7 +1333,7 @@ body{margin:0;color:#000;background:#fff;
   font-family:"Courier New",Courier,monospace;font-size:9pt;align-self:flex-end;margin-bottom:3px;}
 .sec-t{flex:1;font-family:"Courier New",Courier,monospace;font-size:9.5pt;letter-spacing:.18em;
   text-transform:uppercase;align-self:flex-end;padding-bottom:4px;}
-.f{border-bottom:.5pt dotted #555;padding:4px 0 5px;page-break-inside:avoid;}
+.f{border-bottom:.5pt dotted #555;padding:4px 0 5px;page-break-inside:avoid;break-inside:avoid;}
 .f p{margin:0;}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:0 18px;}
 .nil{font-family:"Courier New",Courier,monospace;font-size:8pt;letter-spacing:.12em;color:#777;}
@@ -1337,21 +1342,25 @@ th,td{border:.5pt solid #000;padding:3px 5px;text-align:left;vertical-align:top;
 th{font-family:"Courier New",Courier,monospace;font-size:7pt;letter-spacing:.1em;
   text-transform:uppercase;background:#e9e9e9;}
 td.m{font-family:"Courier New",Courier,monospace;font-size:8.5pt;white-space:nowrap;}
-tr{page-break-inside:avoid;}
+tr{page-break-inside:avoid;break-inside:avoid;}
 .sub{font-family:"Courier New",Courier,monospace;font-size:7.5pt;letter-spacing:.14em;
   text-transform:uppercase;margin:12px 0 3px;}
-.entry{border-left:2pt solid #000;padding:3px 0 3px 9px;margin:7px 0;page-break-inside:avoid;}
+.entry{border-left:2pt solid #000;padding:3px 0 3px 9px;margin:7px 0;page-break-inside:avoid;break-inside:avoid;}
 .entry.anom{border-left-width:4pt;}
 .entry-h{font-family:"Courier New",Courier,monospace;font-size:8pt;letter-spacing:.08em;}
 .anno{margin:3px 0 0 10px;font-size:9.5pt;}
 .anno span{font-family:"Courier New",Courier,monospace;font-size:7pt;letter-spacing:.12em;
   text-transform:uppercase;}
-.plates{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-.plate{page-break-inside:avoid;border:.75pt solid #000;padding:6px;}
-.plate img{width:100%;max-height:3.1in;object-fit:contain;display:block;background:#000;}
+.plates{display:block;font-size:0;}
+.plate{display:inline-block;width:48.6%;vertical-align:top;box-sizing:border-box;
+  margin:0 2.4% 12px 0;font-size:10pt;border:.75pt solid #000;padding:6px;
+  break-inside:avoid;page-break-inside:avoid;-webkit-column-break-inside:avoid;}
+.plate:nth-of-type(2n){margin-right:0;}
+.plate img{width:100%;max-height:2.9in;object-fit:contain;display:block;background:#000;
+  break-inside:avoid;page-break-inside:avoid;}
 .plate .cap{font-size:8.5pt;margin-top:5px;}
 .chk{font-family:"Courier New",Courier,monospace;}
-.cert{border:1pt solid #000;padding:10px 11px;margin-top:20px;page-break-inside:avoid;}
+.cert{border:1pt solid #000;padding:10px 11px;margin-top:20px;page-break-inside:avoid;break-inside:avoid;}
 .sigline{border-bottom:.75pt solid #000;height:26px;margin-top:14px;}
 .foot{border-top:1pt solid #000;margin-top:16px;padding-top:4px;
   font-family:"Courier New",Courier,monospace;font-size:7pt;letter-spacing:.14em;
@@ -1814,7 +1823,302 @@ function CoinLoad({ label = "Working", veil = false }) {
         React.createElement("p", { className: "cp-mono" }, label)));
     return veil ? React.createElement("div", { className: "cp-veil" }, body) : body;
 }
+/* ==================================================================
+   NEARBY — what is around you right now, from three sources.
+
+   1. Shadowlands Haunted Places Index, scraped and geocoded by
+      timothyrenner and republished via TidyTuesday. Fetched once, then
+      cached in IndexedDB so it works with no signal afterwards. Folklore,
+      not verified fact, and many coordinates are the centre of the town
+      rather than the building itself.
+   2. OpenStreetMap via Overpass — real mapped structures tagged as ruins,
+      abandoned, or disused, plus cemeteries. Live query, needs signal, and
+      Overpass rejects browser traffic often enough that mirrors matter.
+   3. Wikipedia geosearch — articles about places near a point.
+   ================================================================== */
+const HAUNTED_CSV = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-10-10/haunted_places.csv";
+const HAUNTED_KEY = "nearby:haunted:v1";
+const OVERPASS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter"
+];
+const R_EARTH_MI = 3958.8;
+const toRad = d => d * Math.PI / 180;
+function distanceMi(aLat, aLon, bLat, bLon) {
+    const dLat = toRad(bLat - aLat), dLon = toRad(bLon - aLon);
+    const x = Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
+    return R_EARTH_MI * 2 * Math.asin(Math.min(1, Math.sqrt(x)));
+}
+function bearing(aLat, aLon, bLat, bLon) {
+    const y = Math.sin(toRad(bLon - aLon)) * Math.cos(toRad(bLat));
+    const x = Math.cos(toRad(aLat)) * Math.sin(toRad(bLat)) -
+        Math.sin(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.cos(toRad(bLon - aLon));
+    const deg = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(deg / 45) % 8];
+}
+/* Minimal CSV reader that survives quoted fields with commas and newlines. */
+function parseCSV(text) {
+    const rows = [];
+    let row = [], field = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (q) {
+            if (c === '"') {
+                if (text[i + 1] === '"') {
+                    field += '"';
+                    i++;
+                }
+                else
+                    q = false;
+            }
+            else
+                field += c;
+        }
+        else if (c === '"')
+            q = true;
+        else if (c === ",") {
+            row.push(field);
+            field = "";
+        }
+        else if (c === "\n") {
+            row.push(field);
+            rows.push(row);
+            row = [];
+            field = "";
+        }
+        else if (c !== "\r")
+            field += c;
+    }
+    if (field.length || row.length) {
+        row.push(field);
+        rows.push(row);
+    }
+    return rows;
+}
+async function loadHaunted(onProgress) {
+    const cached = await S.get(HAUNTED_KEY);
+    if (cached && cached.length)
+        return cached;
+    onProgress && onProgress("Downloading the haunted places index (one time)");
+    const res = await fetch(HAUNTED_CSV, { cache: "force-cache" });
+    if (!res.ok)
+        throw new Error("index download failed (" + res.status + ")");
+    const rows = parseCSV(await res.text());
+    const head = rows.shift().map(h => h.trim().toLowerCase());
+    const col = n => head.indexOf(n);
+    const iDesc = col("description"), iLoc = col("location"), iCity = col("city"), iState = col("state"), iLat = col("latitude"), iLon = col("longitude"), iCLat = col("city_latitude"), iCLon = col("city_longitude");
+    const out = [];
+    for (const r of rows) {
+        const lat = parseFloat(r[iLat]) || parseFloat(r[iCLat]);
+        const lon = parseFloat(r[iLon]) || parseFloat(r[iCLon]);
+        if (!isFinite(lat) || !isFinite(lon))
+            continue;
+        const exact = isFinite(parseFloat(r[iLat]));
+        out.push({
+            n: (r[iLoc] || "").trim() || (r[iCity] || "").trim(),
+            c: (r[iCity] || "").trim(),
+            s: (r[iState] || "").trim(),
+            d: (r[iDesc] || "").trim().slice(0, 400),
+            lat, lon, exact
+        });
+    }
+    try {
+        await S.set(HAUNTED_KEY, out);
+    }
+    catch (e) { /* too big to cache; still usable now */ }
+    return out;
+}
+async function queryOverpass(lat, lon, radiusMi) {
+    const m = Math.round(radiusMi * 1609.34);
+    const q = `[out:json][timeout:25];(
+    node["historic"="ruins"](around:${m},${lat},${lon});
+    way["historic"="ruins"](around:${m},${lat},${lon});
+    node["building"="ruins"](around:${m},${lat},${lon});
+    way["building"="ruins"](around:${m},${lat},${lon});
+    node["abandoned"="yes"](around:${m},${lat},${lon});
+    way["abandoned"="yes"](around:${m},${lat},${lon});
+    node["place"="abandoned"](around:${m},${lat},${lon});
+    node["historic"="tomb"](around:${m},${lat},${lon});
+    way["landuse"="cemetery"](around:${m},${lat},${lon});
+    node["amenity"="grave_yard"](around:${m},${lat},${lon});
+  );out center 60;`;
+    let lastErr = null;
+    for (const base of OVERPASS) {
+        try {
+            // GET, not POST: it avoids the preflight that these servers reject.
+            const res = await fetch(base + "?data=" + encodeURIComponent(q));
+            if (!res.ok) {
+                lastErr = new Error(base + " said " + res.status);
+                continue;
+            }
+            const j = await res.json();
+            return (j.elements || []).map(e => {
+                const la = e.lat != null ? e.lat : (e.center && e.center.lat);
+                const lo = e.lon != null ? e.lon : (e.center && e.center.lon);
+                if (la == null || lo == null)
+                    return null;
+                const t = e.tags || {};
+                const kind = t.historic === "ruins" || t.building === "ruins" ? "ruins"
+                    : t.landuse === "cemetery" || t.amenity === "grave_yard" ? "cemetery"
+                        : t.place === "abandoned" ? "ghost town" : "abandoned";
+                return { n: t.name || ("Unnamed " + kind), d: kind, lat: la, lon: lo, exact: true };
+            }).filter(Boolean);
+        }
+        catch (e) {
+            lastErr = e;
+        }
+    }
+    throw lastErr || new Error("no Overpass mirror answered");
+}
+async function queryWikipedia(lat, lon, radiusMi) {
+    const m = Math.min(10000, Math.round(radiusMi * 1609.34)); // API caps at 10km
+    const url = "https://en.wikipedia.org/w/api.php?action=query&list=geosearch" +
+        `&gscoord=${lat}%7C${lon}&gsradius=${m}&gslimit=40&format=json&origin=*`;
+    const res = await fetch(url);
+    if (!res.ok)
+        throw new Error("Wikipedia said " + res.status);
+    const j = await res.json();
+    return ((j.query && j.query.geosearch) || []).map(p => ({
+        n: p.title, d: "Wikipedia article", lat: p.lat, lon: p.lon, exact: true,
+        url: "https://en.wikipedia.org/wiki/" + encodeURIComponent(p.title.replace(/ /g, "_"))
+    }));
+}
+function Nearby({ onStart, onClose }) {
+    const [pos, setPos] = useState(null);
+    const [radius, setRadius] = useState(15);
+    const [rows, setRows] = useState([]);
+    const [msg, setMsg] = useState("");
+    const [warn, setWarn] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [open, setOpen] = useState(null);
+    const [want, setWant] = useState({ haunted: true, osm: true, wiki: true });
+    const run = async () => {
+        setBusy(true);
+        setRows([]);
+        setWarn([]);
+        setMsg("Getting your position");
+        let here = pos;
+        if (!here) {
+            try {
+                here = await new Promise((res, rej) => {
+                    if (!navigator.geolocation)
+                        return rej(new Error("no GPS in this browser"));
+                    navigator.geolocation.getCurrentPosition(p => res({ lat: p.coords.latitude, lon: p.coords.longitude }), e => rej(new Error(e.message || "location refused")), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+                });
+                setPos(here);
+            }
+            catch (e) {
+                setBusy(false);
+                setMsg("");
+                setWarn([`Could not get your location: ${e.message}`]);
+                return;
+            }
+        }
+        const found = [], problems = [];
+        if (want.haunted) {
+            setMsg("Checking the haunted places index");
+            try {
+                const all = await loadHaunted(setMsg);
+                for (const h of all) {
+                    const mi = distanceMi(here.lat, here.lon, h.lat, h.lon);
+                    if (mi <= radius)
+                        found.push({
+                            src: "Shadowlands", name: h.n, note: h.d,
+                            where: [h.c, h.s].filter(Boolean).join(", "),
+                            mi, dir: bearing(here.lat, here.lon, h.lat, h.lon),
+                            lat: h.lat, lon: h.lon, rough: !h.exact
+                        });
+                }
+            }
+            catch (e) {
+                problems.push("Haunted index unavailable: " + e.message);
+            }
+        }
+        if (want.osm) {
+            setMsg("Asking OpenStreetMap for ruins and abandoned sites");
+            try {
+                for (const o of await queryOverpass(here.lat, here.lon, radius)) {
+                    found.push({
+                        src: "OpenStreetMap", name: o.n, note: o.d, where: "",
+                        mi: distanceMi(here.lat, here.lon, o.lat, o.lon),
+                        dir: bearing(here.lat, here.lon, o.lat, o.lon),
+                        lat: o.lat, lon: o.lon, rough: false
+                    });
+                }
+            }
+            catch (e) {
+                problems.push("OpenStreetMap unavailable: " + e.message);
+            }
+        }
+        if (want.wiki) {
+            setMsg("Asking Wikipedia what is documented here");
+            try {
+                for (const w of await queryWikipedia(here.lat, here.lon, radius)) {
+                    found.push({
+                        src: "Wikipedia", name: w.n, note: w.d, where: "", url: w.url,
+                        mi: distanceMi(here.lat, here.lon, w.lat, w.lon),
+                        dir: bearing(here.lat, here.lon, w.lat, w.lon),
+                        lat: w.lat, lon: w.lon, rough: false
+                    });
+                }
+            }
+            catch (e) {
+                problems.push("Wikipedia unavailable: " + e.message);
+            }
+        }
+        found.sort((a, b) => a.mi - b.mi);
+        setRows(found);
+        setWarn(problems);
+        setMsg(found.length ? "" : "Nothing found within that radius.");
+        setBusy(false);
+    };
+    return (React.createElement("div", { className: "cp-card", style: { marginTop: 10 } },
+        React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between", marginBottom: 8 } },
+            React.createElement("strong", { className: "cp-mono", style: { letterSpacing: ".14em", fontSize: 12 } }, "NEARBY"),
+            React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: onClose },
+                React.createElement(X, { size: 15 }))),
+        React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap", marginBottom: 8 } }, [5, 15, 30, 60].map(r => (React.createElement("button", { key: r, className: "cp-chip" + (radius === r ? " cp-chip--on" : ""), onClick: () => setRadius(r) },
+            r,
+            " mi")))),
+        React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap", marginBottom: 10 } }, [["haunted", "Haunted index"], ["osm", "OpenStreetMap"], ["wiki", "Wikipedia"]].map(([k, label]) => (React.createElement("button", { key: k, className: "cp-chip" + (want[k] ? " cp-chip--on" : ""), onClick: () => setWant(w => ({ ...w, [k]: !w[k] })) }, label)))),
+        React.createElement("button", { className: "cp-btn cp-btn--go", style: { width: "100%" }, onClick: run, disabled: busy },
+            React.createElement(Crosshair, { size: 16 }),
+            " ",
+            busy ? "Searching…" : "Search around me"),
+        busy && React.createElement(CoinLoad, { label: msg || "Searching" }),
+        !busy && msg && React.createElement("p", { className: "cp-hint" }, msg),
+        warn.map((w, i) => (React.createElement("p", { key: i, className: "cp-hint", style: { color: "var(--amber)" } },
+            React.createElement(AlertTriangle, { size: 13, style: { verticalAlign: -2, marginRight: 5 } }),
+            w))),
+        rows.length > 0 && (React.createElement("p", { className: "cp-hint", style: { marginTop: 10 } },
+            rows.length,
+            " within ",
+            radius,
+            " miles. Many of these are private property \u2014 the sources say nothing about whether you may legally be there.")),
+        rows.map((r, i) => (React.createElement("div", { key: i, className: "cp-item", style: { cursor: "pointer" }, onClick: () => setOpen(open === i ? null : i) },
+            React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between", gap: 8 } },
+                React.createElement("span", { style: { fontWeight: 600 } }, r.name),
+                React.createElement("span", { className: "cp-mono cp-sub", style: { whiteSpace: "nowrap" } },
+                    r.mi < 10 ? r.mi.toFixed(1) : Math.round(r.mi),
+                    " mi ",
+                    r.dir)),
+            React.createElement("div", { className: "cp-sub cp-mono", style: { fontSize: 11, marginTop: 3 } },
+                r.src,
+                r.where ? " · " + r.where : "",
+                r.rough ? " · town-centre coords" : ""),
+            open === i && (React.createElement("div", { style: { marginTop: 8 } },
+                r.note && React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } }, r.note),
+                React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap" } },
+                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: e => { e.stopPropagation(); onStart(r); } },
+                        React.createElement(Plus, { size: 14 }),
+                        " Start a case here"),
+                    React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: `https://maps.apple.com/?ll=${r.lat},${r.lon}&q=${encodeURIComponent(r.name)}`, target: "_blank", rel: "noreferrer" }, "Directions"),
+                    r.url && (React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: r.url, target: "_blank", rel: "noreferrer" }, "Read"))))))))));
+}
 function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId }) {
+    const [nearby, setNearby] = useState(false);
     const [q, setQ] = useState("");
     const [desc, setDesc] = useState(true);
     const rows = useMemo(() => {
@@ -1862,7 +2166,11 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
                     " Restore"),
                 React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: downloadLogo, title: "Save the seal as an SVG for letterhead" },
                     React.createElement(Download, { size: 15 }),
-                    " Seal"))),
+                    " Seal"),
+                React.createElement("button", { className: "cp-btn cp-btn--sm" + (nearby ? " cp-btn--go" : ""), onClick: () => setNearby(v => !v), title: "Find sites around you" },
+                    React.createElement(Crosshair, { size: 15 }),
+                    " Nearby"))),
+        nearby && React.createElement(Nearby, { onClose: () => setNearby(false), onStart: r => { setNearby(false); onNew(r); } }),
         loading && React.createElement(CoinLoad, { label: "Reading case files" }),
         !loading && rows.length === 0 && (React.createElement("p", { className: "cp-empty" }, index.length === 0
             ? "No cases yet. Open one before you head out — the planning section is the point."
@@ -1924,8 +2232,23 @@ function CypherProtocol() {
             return next;
         });
     }, []);
-    const newCase = async () => {
+    const newCase = async (seed) => {
         const c = blankCase(nextCaseNumber(index));
+        if (seed && seed.name) {
+            c.title = seed.name;
+            c.location.name = seed.name;
+            c.location.address = seed.where || "";
+            c.location.description = seed.note ? `${seed.src}: ${seed.note}` : `Found via ${seed.src}.`;
+            c.location.priorActivity = seed.src === "Shadowlands" && seed.note ? seed.note : "";
+            c.pins.push({
+                id: uid(),
+                label: seed.name,
+                lat: Number(seed.lat).toFixed(6),
+                lng: Number(seed.lon).toFixed(6),
+                note: seed.rough ? "Town-centre coordinates from the index — refine on site." : "",
+                ts: nowISO()
+            });
+        }
         fresh.current.add(c.id);
         setTimeout(() => fresh.current.delete(c.id), 45000);
         let ok = true;
