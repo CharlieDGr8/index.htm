@@ -2439,7 +2439,7 @@ function Nearby({ onStart, onClose }) {
 
 function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId,
   ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone,
-  onReclaim }) {
+  onReclaim, onPackCase }) {
   const [nearby, setNearby] = useState(false);
   const [q, setQ] = useState("");
   const [desc, setDesc] = useState(true);
@@ -2488,7 +2488,7 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
               <Printer size={15} /> Print file
             </button>
             <button className="cp-btn cp-btn--sm" onClick={onBackup}>
-              <Download size={15} /> Back up
+              <Download size={15} /> Back up notes
             </button>
           </>}
           <button className="cp-btn cp-btn--sm" onClick={onImport}>
@@ -2516,8 +2516,8 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
             BACKUP READY
           </p>
           <p className="cp-hint" style={{ marginTop: 0 }}>
-            {ready.n} case{ready.n === 1 ? "" : "s"}, {ready.mb} MB. Hand it off now — this has to be
-            a separate tap or iOS will not open the share sheet.
+            {ready.label || `${ready.n} case${ready.n === 1 ? "" : "s"}`} — {ready.mb} MB. Hand it off now;
+            this has to be a separate tap or iOS will not open the share sheet.
           </p>
           <div className="cp-row" style={{ gap: 6, flexWrap: "wrap" }}>
             <button className="cp-btn cp-btn--go" onClick={onSendBackup}>
@@ -2577,6 +2577,11 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
             <div style={{ fontSize: 16, fontWeight: 550, margin: "4px 0 2px" }}>{c.title || "Untitled case"}</div>
             <div className="cp-hint">{c.locationName || "No location set"}</div>
             <div className="cp-hint cp-mono" style={{ marginTop: 2 }}>{c.date}</div>
+          </button>
+          <button className="cp-btn cp-btn--sm cp-btn--ghost" title="Export this case with its media"
+            style={{ position: "absolute", right: 52, bottom: 8 }}
+            onClick={e => { e.stopPropagation(); onPackCase(c); }}>
+            <Download size={15} />
           </button>
           <button className="cp-btn cp-btn--sm cp-btn--ghost"
             style={{ position: "absolute", right: 6, bottom: 8 }}
@@ -2797,38 +2802,75 @@ function CypherProtocol() {
     }
   };
 
-  const backupAll = async () => {
-    if (backupCache.current) {
-      const r = await saveFile(`case-log-backup-${dateStamp()}.json`, backupCache.current, "application/json");
-      setNote(saveResultMessage(r, "Backup"));
-      return;
-    }
-    setBusy("Packing archive");
-    setNote("Packing every case and photo — this can take a moment…");
-    const payload = { app: "case-log", version: 1, exportedAt: nowISO(), customGear: gear, cases: [] };
-    for (const row of index) {
-      const c = await S.get(K.case(row.id));
-      if (!c) continue;
-      const mediaFiles = {};
-      for (const m of c.media) {
-        const rec = await S.get(K.media(c.id, m.id));
-        if (rec) mediaFiles[m.id] = rec;
+  /* Two kinds of backup.
+
+     Text-only packs every case without media. It is small, it always works,
+     and it protects the part that cannot be re-shot: your notes, readings and
+     log. Full backup carries photos and clips, but only one case at a time —
+     JSON.stringify has a hard string-length limit and a whole library of
+     photos sails past it, which is why this used to die in silence. */
+
+  const packText = async () => {
+    setBusy("Packing notes");
+    try {
+      const payload = { app: "cypher-protocol", version: 1, kind: "text-only",
+        exportedAt: nowISO(), customGear: gear, cases: [] };
+      for (const row of index) {
+        const c = await S.get(K.case(row.id));
+        if (c) payload.cases.push({ ...c, media: (c.media || []).map(m => ({ ...m, missing: true })) });
       }
-      payload.cases.push({ ...c, mediaFiles });
+      const text = JSON.stringify(payload);
+      setBusy("");
+      setReady({ text, n: payload.cases.length, mb: (text.length / 1048576).toFixed(1),
+        label: `all ${payload.cases.length} case${payload.cases.length === 1 ? "" : "s"}, notes only`,
+        file: `cypher-protocol-notes-${dateStamp()}.json` });
+      setNote("");
+    } catch (e) {
+      setBusy("");
+      setNote("Could not pack the notes: " + ((e && e.message) || e));
     }
-    const text = JSON.stringify(payload);
-    backupCache.current = text;
-    setTimeout(() => { backupCache.current = null; }, 300000);
-    setBusy("");
-    setReady({ text, n: payload.cases.length, mb: (text.length / 1048576).toFixed(1) });
-    setNote("");
+  };
+
+  const packCase = async row => {
+    setBusy("Packing " + row.caseNumber);
+    try {
+      const c = await S.get(K.case(row.id));
+      if (!c) throw new Error("that case could not be read back from storage");
+      const mediaFiles = {};
+      let bytes = 0;
+      for (const m of (c.media || [])) {
+        const rec = await S.get(K.media(c.id, m.id));
+        if (!rec) continue;
+        bytes += (rec.dataUrl || "").length;
+        // ~256MB of string is where phones start throwing. Stop well short.
+        if (bytes > 200_000_000) {
+          throw new Error(`this case holds more media than one file can carry (past ${(bytes / 1048576).toFixed(0)} MB). ` +
+            `Export it as notes only, or remove some video first.`);
+        }
+        mediaFiles[m.id] = rec;
+      }
+      const payload = { app: "cypher-protocol", version: 1, kind: "case",
+        exportedAt: nowISO(), customGear: gear, cases: [{ ...c, mediaFiles }] };
+      const text = JSON.stringify(payload);
+      setBusy("");
+      setReady({ text, n: 1, mb: (text.length / 1048576).toFixed(1),
+        label: `${row.caseNumber}, with ${Object.keys(mediaFiles).length} media file${Object.keys(mediaFiles).length === 1 ? "" : "s"}`,
+        file: `${row.caseNumber}-full.json` });
+      setNote("");
+    } catch (e) {
+      setBusy("");
+      const m = (e && e.message) || String(e);
+      setNote(/string length|Invalid string|allocation|RangeError/i.test(m)
+        ? "That case has too much media to fit in one file. Export it as notes only, or clear some video out of it first."
+        : "Could not pack that case: " + m);
+    }
   };
 
   /* Second tap. Runs straight off the press with the file already built, which
      is the only way iOS will open the share sheet. */
   const sendBackup = async () => {
     if (!ready) return;
-    const r = await saveFile(`cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
+    const r = await saveFile(ready.file || `cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
     if (r === "shared" || r === "saved") { setReady(null); setNote("Backup handed off. Save it somewhere you will find it again."); }
     else if (r === "cancelled") setNote("Cancelled — the backup is still packed and ready.");
     else setNote("That went to the download folder. If nothing appeared, this app cannot download; " +
@@ -2930,7 +2972,7 @@ function CypherProtocol() {
         <div className="cp-shell">
           <aside className="cp-rail">
             <CaseList index={index} loading={loading} onOpen={setOpenId} onNew={newCase}
-              onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
+              onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={packText} onPackCase={packCase} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
             pasteOpen={pasteOpen} setPasteOpen={setPasteOpen} pasted={pasted} setPasted={setPasted}
             onRestoreText={restoreText} standalone={isStandalone()} onReclaim={reclaim}
               onImport={() => fileIn.current && fileIn.current.click()} rail activeId={openId} />
@@ -2947,7 +2989,7 @@ function CypherProtocol() {
         ? <CaseDetail id={openId} onBack={() => setOpenId(null)} onSaved={onSaved}
           gear={gear} addGear={addGear} removeGear={removeGear} />
         : <CaseList index={index} loading={loading} onOpen={setOpenId} onNew={newCase}
-          onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
+          onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={packText} onPackCase={packCase} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
             pasteOpen={pasteOpen} setPasteOpen={setPasteOpen} pasted={pasted} setPasted={setPasted}
             onRestoreText={restoreText} standalone={isStandalone()} onReclaim={reclaim}
           onImport={() => fileIn.current && fileIn.current.click()} />)}

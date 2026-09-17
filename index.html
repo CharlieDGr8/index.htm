@@ -2235,7 +2235,7 @@ function Nearby({ onStart, onClose }) {
                     React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: `https://maps.apple.com/?ll=${r.lat},${r.lon}&q=${encodeURIComponent(r.name)}`, target: "_blank", rel: "noreferrer" }, "Directions"),
                     r.url && (React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: r.url, target: "_blank", rel: "noreferrer" }, "Read"))))))))));
 }
-function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone, onReclaim }) {
+function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone, onReclaim, onPackCase }) {
     const [nearby, setNearby] = useState(false);
     const [q, setQ] = useState("");
     const [desc, setDesc] = useState(true);
@@ -2278,7 +2278,7 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
                         " Print file"),
                     React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: onBackup },
                         React.createElement(Download, { size: 15 }),
-                        " Back up")),
+                        " Back up notes")),
                 React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: onImport },
                     React.createElement(Upload, { size: 15 }),
                     " Restore"),
@@ -2295,12 +2295,10 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
         ready && (React.createElement("div", { className: "cp-card", style: { marginTop: 10 } },
             React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "0 0 6px" } }, "BACKUP READY"),
             React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } },
-                ready.n,
-                " case",
-                ready.n === 1 ? "" : "s",
-                ", ",
+                ready.label || `${ready.n} case${ready.n === 1 ? "" : "s"}`,
+                " \u2014 ",
                 ready.mb,
-                " MB. Hand it off now \u2014 this has to be a separate tap or iOS will not open the share sheet."),
+                " MB. Hand it off now; this has to be a separate tap or iOS will not open the share sheet."),
             React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap" } },
                 React.createElement("button", { className: "cp-btn cp-btn--go", onClick: onSendBackup },
                     React.createElement(Upload, { size: 15 }),
@@ -2327,6 +2325,8 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
                 React.createElement("div", { style: { fontSize: 16, fontWeight: 550, margin: "4px 0 2px" } }, c.title || "Untitled case"),
                 React.createElement("div", { className: "cp-hint" }, c.locationName || "No location set"),
                 React.createElement("div", { className: "cp-hint cp-mono", style: { marginTop: 2 } }, c.date)),
+            React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", title: "Export this case with its media", style: { position: "absolute", right: 52, bottom: 8 }, onClick: e => { e.stopPropagation(); onPackCase(c); } },
+                React.createElement(Download, { size: 15 })),
             React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", style: { position: "absolute", right: 6, bottom: 8 }, onClick: () => onDelete(c), "aria-label": `Delete ${c.caseNumber}` },
                 React.createElement(Trash2, { size: 15 }))))),
         !rail && React.createElement("button", { className: "cp-btn cp-btn--go cp-fab", onClick: onNew },
@@ -2558,40 +2558,78 @@ function CypherProtocol() {
                 : "The browser blocked printing. Use Download archive instead.");
         }
     };
-    const backupAll = async () => {
-        if (backupCache.current) {
-            const r = await saveFile(`case-log-backup-${dateStamp()}.json`, backupCache.current, "application/json");
-            setNote(saveResultMessage(r, "Backup"));
-            return;
+    /* Two kinds of backup.
+  
+       Text-only packs every case without media. It is small, it always works,
+       and it protects the part that cannot be re-shot: your notes, readings and
+       log. Full backup carries photos and clips, but only one case at a time —
+       JSON.stringify has a hard string-length limit and a whole library of
+       photos sails past it, which is why this used to die in silence. */
+    const packText = async () => {
+        setBusy("Packing notes");
+        try {
+            const payload = { app: "cypher-protocol", version: 1, kind: "text-only",
+                exportedAt: nowISO(), customGear: gear, cases: [] };
+            for (const row of index) {
+                const c = await S.get(K.case(row.id));
+                if (c)
+                    payload.cases.push({ ...c, media: (c.media || []).map(m => ({ ...m, missing: true })) });
+            }
+            const text = JSON.stringify(payload);
+            setBusy("");
+            setReady({ text, n: payload.cases.length, mb: (text.length / 1048576).toFixed(1),
+                label: `all ${payload.cases.length} case${payload.cases.length === 1 ? "" : "s"}, notes only`,
+                file: `cypher-protocol-notes-${dateStamp()}.json` });
+            setNote("");
         }
-        setBusy("Packing archive");
-        setNote("Packing every case and photo — this can take a moment…");
-        const payload = { app: "case-log", version: 1, exportedAt: nowISO(), customGear: gear, cases: [] };
-        for (const row of index) {
+        catch (e) {
+            setBusy("");
+            setNote("Could not pack the notes: " + ((e && e.message) || e));
+        }
+    };
+    const packCase = async (row) => {
+        setBusy("Packing " + row.caseNumber);
+        try {
             const c = await S.get(K.case(row.id));
             if (!c)
-                continue;
+                throw new Error("that case could not be read back from storage");
             const mediaFiles = {};
-            for (const m of c.media) {
+            let bytes = 0;
+            for (const m of (c.media || [])) {
                 const rec = await S.get(K.media(c.id, m.id));
-                if (rec)
-                    mediaFiles[m.id] = rec;
+                if (!rec)
+                    continue;
+                bytes += (rec.dataUrl || "").length;
+                // ~256MB of string is where phones start throwing. Stop well short.
+                if (bytes > 200000000) {
+                    throw new Error(`this case holds more media than one file can carry (past ${(bytes / 1048576).toFixed(0)} MB). ` +
+                        `Export it as notes only, or remove some video first.`);
+                }
+                mediaFiles[m.id] = rec;
             }
-            payload.cases.push({ ...c, mediaFiles });
+            const payload = { app: "cypher-protocol", version: 1, kind: "case",
+                exportedAt: nowISO(), customGear: gear, cases: [{ ...c, mediaFiles }] };
+            const text = JSON.stringify(payload);
+            setBusy("");
+            setReady({ text, n: 1, mb: (text.length / 1048576).toFixed(1),
+                label: `${row.caseNumber}, with ${Object.keys(mediaFiles).length} media file${Object.keys(mediaFiles).length === 1 ? "" : "s"}`,
+                file: `${row.caseNumber}-full.json` });
+            setNote("");
         }
-        const text = JSON.stringify(payload);
-        backupCache.current = text;
-        setTimeout(() => { backupCache.current = null; }, 300000);
-        setBusy("");
-        setReady({ text, n: payload.cases.length, mb: (text.length / 1048576).toFixed(1) });
-        setNote("");
+        catch (e) {
+            setBusy("");
+            const m = (e && e.message) || String(e);
+            setNote(/string length|Invalid string|allocation|RangeError/i.test(m)
+                ? "That case has too much media to fit in one file. Export it as notes only, or clear some video out of it first."
+                : "Could not pack that case: " + m);
+        }
     };
     /* Second tap. Runs straight off the press with the file already built, which
        is the only way iOS will open the share sheet. */
     const sendBackup = async () => {
         if (!ready)
             return;
-        const r = await saveFile(`cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
+        const r = await saveFile(ready.file || `cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
         if (r === "shared" || r === "saved") {
             setReady(null);
             setNote("Backup handed off. Save it somewhere you will find it again.");
@@ -2729,12 +2767,12 @@ function CypherProtocol() {
                 restore(f); } }),
         wide ? (React.createElement("div", { className: "cp-shell" },
             React.createElement("aside", { className: "cp-rail" },
-                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: backupAll, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId })),
+                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId })),
             React.createElement("main", { className: "cp-detail" }, openId
                 ? React.createElement(CaseDetail, { key: openId, id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, rail: true })
                 : React.createElement("p", { className: "cp-empty", style: { paddingTop: 80 } }, "Pick a case on the left, or open a new one.")))) : (openId
             ? React.createElement(CaseDetail, { id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear })
-            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: backupAll, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click() })),
+            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click() })),
         confirm && (React.createElement("div", { style: {
                 position: "fixed", inset: 0, background: "rgba(4,6,8,.8)", display: "grid",
                 placeItems: "center", zIndex: 60, padding: 18
