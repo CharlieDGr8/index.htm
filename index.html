@@ -170,6 +170,14 @@ const APP_CSS = `
 .cp-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .cp-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;}
 .cp-thumb{width:100%;aspect-ratio:1;object-fit:cover;border-radius:7px;border:1px solid var(--rule);display:block;}
+.cp-pick{position:relative;display:block;width:100%;padding:0;border:0;background:none;
+  cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.cp-pick[data-sel="1"] .cp-thumb{outline:3px solid var(--amber);outline-offset:-3px;opacity:.5;}
+.cp-tick{position:absolute;top:7px;right:7px;width:26px;height:26px;border-radius:999px;
+  background:rgba(8,12,16,.7);border:1.5px solid var(--bone);display:grid;place-items:center;
+  color:var(--bone);font-size:15px;line-height:1;font-weight:700;}
+.cp-pick[data-sel="1"] .cp-tick{background:var(--amber);border-color:var(--amber);color:#1A1206;}
+.cp-selbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;}
 .cp-map{height:260px;border-radius:8px;border:1px solid var(--rule);overflow:hidden;background:var(--panel2);}
 .cp-logline{border-left:2px solid var(--rule);padding:2px 0 2px 11px;margin:10px 0;}
 .cp-logline[data-tag="Anomaly"]{border-left-color:var(--red);}
@@ -933,6 +941,11 @@ function MediaSection({ caseId, media, log, pins, up }) {
     const [busy, setBusy] = useState("");
     const [rec, setRec] = useState(null);
     const [secs, setSecs] = useState(0);
+    // Bulk delete. `armed` is the second tap — a mis-tap that wipes 40 photos
+    // is not something an undo-less app should allow on one press.
+    const [selMode, setSelMode] = useState(false);
+    const [sel, setSel] = useState({});
+    const [armed, setArmed] = useState(false);
     const photoIn = useRef(null), camIn = useRef(null), audioIn = useRef(null), videoIn = useRef(null), vcamIn = useRef(null);
     useEffect(() => {
         let dead = false;
@@ -1041,6 +1054,15 @@ function MediaSection({ caseId, media, log, pins, up }) {
         setBlobs(b => { const n = { ...b }; delete n[id]; return n; });
         up(p => ({ ...p, media: p.media.filter(m => m.id !== id) }));
     };
+    const delMany = async (ids) => {
+        for (const id of ids)
+            await S.del(K.media(caseId, id));
+        setBlobs(b => { const nx = { ...b }; ids.forEach(i => delete nx[i]); return nx; });
+        up(p => ({ ...p, media: p.media.filter(m => ids.indexOf(m.id) === -1) }));
+        setSel({});
+        setArmed(false);
+        setSelMode(false);
+    };
     const linkOptions = [
         ...log.map(e => ({ v: `log:${e.id}`, l: `Log ${clockOf(e.ts)} — ${e.text.slice(0, 34)}` })),
         ...pins.map(p => ({ v: `pin:${p.id}`, l: `Pin — ${p.label || "unlabeled"}` }))
@@ -1091,15 +1113,32 @@ function MediaSection({ caseId, media, log, pins, up }) {
             "Photos are resized and compressed before saving. Audio and video are stored as they are, so they use far more room \u2014 a single item over about ",
             Math.round(MAX_VALUE_CHARS * 0.75 / 1048576),
             " MB is refused outright rather than half-saved. There is no fixed limit on how many you add; the real ceiling is how much room the browser gives this site overall, and video is what fills it. Back up regularly and the files survive anything that happens to the browser."),
-        photos.length > 0 && React.createElement(React.Fragment, null,
-            React.createElement("label", { className: "cp-label" }, "Photos"),
-            React.createElement("div", { className: "cp-thumbs" }, photos.map(m => (React.createElement("div", { key: m.id }, blobs[m.id]
+        photos.length > 0 && (() => {
+            const picked = photos.filter(m => sel[m.id]).map(m => m.id);
+            const tile = m => (blobs[m.id]
                 ? React.createElement("img", { className: "cp-thumb", src: blobs[m.id], alt: m.caption || m.name })
                 : React.createElement("div", { className: "cp-thumb", style: { display: "grid", placeItems: "center" } },
-                    React.createElement("span", { className: "cp-hint" }, "\u2026")))))),
-            photos.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
-                React.createElement("strong", { style: { fontSize: 13 }, className: "cp-mono" }, m.name),
-                meta(m))))),
+                    React.createElement("span", { className: "cp-hint" }, "\u2026")));
+            return React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between", marginTop: 14 } },
+                    React.createElement("label", { className: "cp-label", style: { margin: 0 } }, `Photos (${photos.length})`),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setSelMode(v => !v); setSel({}); setArmed(false); } }, selMode ? "Done" : "Select")),
+                selMode && React.createElement("div", { className: "cp-selbar" },
+                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setArmed(false); setSel(Object.fromEntries(photos.map(m => [m.id, true]))); } }, "Select all"),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => { setSel({}); setArmed(false); } }, "Clear"),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm" + (armed ? " cp-btn--rec" : ""), disabled: picked.length === 0, onClick: () => armed ? delMany(picked) : setArmed(true) },
+                        React.createElement(Trash2, { size: 15 }),
+                        armed ? ` Delete ${picked.length} — tap again` : ` Delete ${picked.length}`)),
+                selMode && React.createElement("p", { className: "cp-hint" }, "Tap the shots you want gone. Deleting is permanent \u2014 there is no undo."),
+                React.createElement("div", { className: "cp-thumbs" }, photos.map(m => selMode
+                    ? React.createElement("button", { key: m.id, className: "cp-pick", "data-sel": sel[m.id] ? "1" : "0", "aria-pressed": !!sel[m.id], "aria-label": `${sel[m.id] ? "Deselect" : "Select"} ${m.name}`, onClick: () => { setArmed(false); setSel(x => ({ ...x, [m.id]: !x[m.id] })); } },
+                        tile(m),
+                        React.createElement("span", { className: "cp-tick" }, sel[m.id] ? "\u2713" : ""))
+                    : React.createElement("div", { key: m.id }, tile(m)))),
+                !selMode && photos.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
+                    React.createElement("strong", { style: { fontSize: 13 }, className: "cp-mono" }, m.name),
+                    meta(m)))));
+        })(),
         others.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
             React.createElement("div", { className: "cp-row", style: { gap: 6 } },
                 m.kind === "audio" ? React.createElement(Play, { size: 15 }) : React.createElement(Film, { size: 15 }),
