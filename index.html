@@ -170,14 +170,6 @@ const APP_CSS = `
 .cp-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .cp-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;}
 .cp-thumb{width:100%;aspect-ratio:1;object-fit:cover;border-radius:7px;border:1px solid var(--rule);display:block;}
-.cp-pick{position:relative;display:block;width:100%;padding:0;border:0;background:none;
-  cursor:pointer;-webkit-tap-highlight-color:transparent;}
-.cp-pick[data-sel="1"] .cp-thumb{outline:3px solid var(--amber);outline-offset:-3px;opacity:.5;}
-.cp-tick{position:absolute;top:7px;right:7px;width:26px;height:26px;border-radius:999px;
-  background:rgba(8,12,16,.7);border:1.5px solid var(--bone);display:grid;place-items:center;
-  color:var(--bone);font-size:15px;line-height:1;font-weight:700;}
-.cp-pick[data-sel="1"] .cp-tick{background:var(--amber);border-color:var(--amber);color:#1A1206;}
-.cp-selbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;}
 .cp-map{height:260px;border-radius:8px;border:1px solid var(--rule);overflow:hidden;background:var(--panel2);}
 .cp-logline{border-left:2px solid var(--rule);padding:2px 0 2px 11px;margin:10px 0;}
 .cp-logline[data-tag="Anomaly"]{border-left-color:var(--red);}
@@ -396,7 +388,6 @@ async function compressImage(file, maxDim = 1600) {
     return out.length < raw.length ? out : raw;
 }
 const kb = n => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
-const space = n => n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : `${Math.round(n / 1048576)} MB`;
 /* Sync scaffolding. There is no change-notification API, so every device
    polls the same keys and announces itself with a short-lived beacon. */
 const SESSION = uid();
@@ -941,11 +932,6 @@ function MediaSection({ caseId, media, log, pins, up }) {
     const [busy, setBusy] = useState("");
     const [rec, setRec] = useState(null);
     const [secs, setSecs] = useState(0);
-    // Bulk delete. `armed` is the second tap — a mis-tap that wipes 40 photos
-    // is not something an undo-less app should allow on one press.
-    const [selMode, setSelMode] = useState(false);
-    const [sel, setSel] = useState({});
-    const [armed, setArmed] = useState(false);
     const photoIn = useRef(null), camIn = useRef(null), audioIn = useRef(null), videoIn = useRef(null), vcamIn = useRef(null);
     useEffect(() => {
         let dead = false;
@@ -1054,15 +1040,6 @@ function MediaSection({ caseId, media, log, pins, up }) {
         setBlobs(b => { const n = { ...b }; delete n[id]; return n; });
         up(p => ({ ...p, media: p.media.filter(m => m.id !== id) }));
     };
-    const delMany = async (ids) => {
-        for (const id of ids)
-            await S.del(K.media(caseId, id));
-        setBlobs(b => { const nx = { ...b }; ids.forEach(i => delete nx[i]); return nx; });
-        up(p => ({ ...p, media: p.media.filter(m => ids.indexOf(m.id) === -1) }));
-        setSel({});
-        setArmed(false);
-        setSelMode(false);
-    };
     const linkOptions = [
         ...log.map(e => ({ v: `log:${e.id}`, l: `Log ${clockOf(e.ts)} — ${e.text.slice(0, 34)}` })),
         ...pins.map(p => ({ v: `pin:${p.id}`, l: `Pin — ${p.label || "unlabeled"}` }))
@@ -1113,32 +1090,15 @@ function MediaSection({ caseId, media, log, pins, up }) {
             "Photos are resized and compressed before saving. Audio and video are stored as they are, so they use far more room \u2014 a single item over about ",
             Math.round(MAX_VALUE_CHARS * 0.75 / 1048576),
             " MB is refused outright rather than half-saved. There is no fixed limit on how many you add; the real ceiling is how much room the browser gives this site overall, and video is what fills it. Back up regularly and the files survive anything that happens to the browser."),
-        photos.length > 0 && (() => {
-            const picked = photos.filter(m => sel[m.id]).map(m => m.id);
-            const tile = m => (blobs[m.id]
+        photos.length > 0 && React.createElement(React.Fragment, null,
+            React.createElement("label", { className: "cp-label" }, "Photos"),
+            React.createElement("div", { className: "cp-thumbs" }, photos.map(m => (React.createElement("div", { key: m.id }, blobs[m.id]
                 ? React.createElement("img", { className: "cp-thumb", src: blobs[m.id], alt: m.caption || m.name })
                 : React.createElement("div", { className: "cp-thumb", style: { display: "grid", placeItems: "center" } },
-                    React.createElement("span", { className: "cp-hint" }, "\u2026")));
-            return React.createElement(React.Fragment, null,
-                React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between", marginTop: 14 } },
-                    React.createElement("label", { className: "cp-label", style: { margin: 0 } }, `Photos (${photos.length})`),
-                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setSelMode(v => !v); setSel({}); setArmed(false); } }, selMode ? "Done" : "Select")),
-                selMode && React.createElement("div", { className: "cp-selbar" },
-                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setArmed(false); setSel(Object.fromEntries(photos.map(m => [m.id, true]))); } }, "Select all"),
-                    React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => { setSel({}); setArmed(false); } }, "Clear"),
-                    React.createElement("button", { className: "cp-btn cp-btn--sm" + (armed ? " cp-btn--rec" : ""), disabled: picked.length === 0, onClick: () => armed ? delMany(picked) : setArmed(true) },
-                        React.createElement(Trash2, { size: 15 }),
-                        armed ? ` Delete ${picked.length} — tap again` : ` Delete ${picked.length}`)),
-                selMode && React.createElement("p", { className: "cp-hint" }, "Tap the shots you want gone. Deleting is permanent \u2014 there is no undo."),
-                React.createElement("div", { className: "cp-thumbs" }, photos.map(m => selMode
-                    ? React.createElement("button", { key: m.id, className: "cp-pick", "data-sel": sel[m.id] ? "1" : "0", "aria-pressed": !!sel[m.id], "aria-label": `${sel[m.id] ? "Deselect" : "Select"} ${m.name}`, onClick: () => { setArmed(false); setSel(x => ({ ...x, [m.id]: !x[m.id] })); } },
-                        tile(m),
-                        React.createElement("span", { className: "cp-tick" }, sel[m.id] ? "\u2713" : ""))
-                    : React.createElement("div", { key: m.id }, tile(m)))),
-                !selMode && photos.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
-                    React.createElement("strong", { style: { fontSize: 13 }, className: "cp-mono" }, m.name),
-                    meta(m)))));
-        })(),
+                    React.createElement("span", { className: "cp-hint" }, "\u2026")))))),
+            photos.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
+                React.createElement("strong", { style: { fontSize: 13 }, className: "cp-mono" }, m.name),
+                meta(m))))),
         others.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
             React.createElement("div", { className: "cp-row", style: { gap: 6 } },
                 m.kind === "audio" ? React.createElement(Play, { size: 15 }) : React.createElement(Film, { size: 15 }),
@@ -1601,56 +1561,41 @@ function dossierHTML(cases, gear) {
 function downloadLogo() {
     saveFile("cypher-protocol-seal.svg", sealInk(512), "image/svg+xml");
 }
-/* A photographic plate prints about 2.4in wide, so 1000px is already more
-   detail than any printer resolves. Full-size shots are re-rendered down
-   before they enter the dossier: the browser has to decode every image in
-   that document into an uncompressed bitmap, and a 1600px photo costs about
-   7MB of memory to hold that way. A dozen of them is what was killing the
-   tab mid-print. */
-async function shrinkForPrint(dataUrl, maxDim = 1000) {
-    try {
-        const img = await loadImage(dataUrl);
-        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        if (scale === 1 && dataUrl.length < 400000)
-            return dataUrl;
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const c = document.createElement("canvas");
-        c.width = w;
-        c.height = h;
-        c.getContext("2d").drawImage(img, 0, 0, w, h);
-        const out = c.toDataURL("image/jpeg", 0.72);
-        c.width = c.height = 0; // drop the backing store now, not whenever
-        return out.length < dataUrl.length ? out : dataUrl;
-    }
-    catch (e) {
-        return dataUrl;
-    }
-}
 async function photosFor(c) {
     const out = {};
     for (const m of c.media.filter(x => x.kind === "photo")) {
         const rec = await S.get(K.media(c.id, m.id));
         if (rec && rec.dataUrl)
-            out[m.id] = await shrinkForPrint(rec.dataUrl);
+            out[m.id] = rec.dataUrl;
     }
     return out;
 }
 // Opens the system print dialog against a hidden frame. Returns false if the
 // sandbox refuses, so the caller can fall back to downloading the file.
-function printDoc(html) {
+/* An app launched from the home screen gets no print dialog and no ordinary
+   downloads on iOS. Everything that leaves the app has to go via the share
+   sheet or via Safari instead. */
+const isStandalone = () => (typeof navigator !== "undefined" && navigator.standalone === true) ||
+    (typeof matchMedia !== "undefined" && matchMedia("(display-mode: standalone)").matches);
+/* Hand a document to Safari, where printing works. Returns false if the
+   browser blocked the window, which it will unless this runs on a tap. */
+function openInBrowser(html) {
     try {
-        // Tear down any frame left over from an earlier attempt first. Each one
-        // holds a whole second copy of the dossier, so a failed print followed
-        // by a retry used to put two of them in memory at the same time.
-        Array.prototype.forEach.call(document.querySelectorAll("iframe[data-cp-print]"), el => {
-            try {
-                el.remove();
-            }
-            catch (e) { }
-        });
+        const blob = new Blob([html], { type: "text/html" });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, "_blank");
+        setTimeout(() => URL.revokeObjectURL(url), 120000);
+        return !!w;
+    }
+    catch (e) {
+        return false;
+    }
+}
+function printDoc(html) {
+    if (isStandalone() && openInBrowser(html))
+        return true;
+    try {
         const f = document.createElement("iframe");
-        f.setAttribute("data-cp-print", "1");
         f.setAttribute("style", "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0");
         document.body.appendChild(f);
         const d = f.contentWindow.document;
@@ -1666,7 +1611,7 @@ function printDoc(html) {
             setTimeout(() => { try {
                 document.body.removeChild(f);
             }
-            catch (e) { } }, 60000);
+            catch (e) { } }, 120000);
         };
         let waited = 0;
         const tick = () => {
@@ -1810,10 +1755,6 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail }) {
         const html = await buildDoc();
         const ok = printDoc(html);
         setDbusy("");
-        // The assembled dossier can run to tens of megabytes of text. Once the
-        // print frame has it there is no reason to keep ours; rebuilding on the
-        // next tap is cheaper than carrying it around.
-        setTimeout(() => { docCache.current = null; }, 45000);
         setPrintMsg(ok
             ? "Print dialog opening. Choose Save as PDF. If no dialog appeared, use Download case file instead."
             : "The browser blocked printing. Use Download case file instead.");
@@ -2294,7 +2235,7 @@ function Nearby({ onStart, onClose }) {
                     React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: `https://maps.apple.com/?ll=${r.lat},${r.lon}&q=${encodeURIComponent(r.name)}`, target: "_blank", rel: "noreferrer" }, "Directions"),
                     r.url && (React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: r.url, target: "_blank", rel: "noreferrer" }, "Read"))))))))));
 }
-function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId }) {
+function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone }) {
     const [nearby, setNearby] = useState(false);
     const [q, setQ] = useState("");
     const [desc, setDesc] = useState(true);
@@ -2341,13 +2282,36 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
                 React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: onImport },
                     React.createElement(Upload, { size: 15 }),
                     " Restore"),
+                React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => setPasteOpen(v => !v), title: "Restore from pasted text" }, "Paste"),
                 React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: downloadLogo, title: "Save the seal as an SVG for letterhead" },
                     React.createElement(Download, { size: 15 }),
                     " Seal"),
                 React.createElement("button", { className: "cp-btn cp-btn--sm" + (nearby ? " cp-btn--go" : ""), onClick: () => setNearby(v => !v), title: "Find sites around you" },
                     React.createElement(Crosshair, { size: 15 }),
                     " Nearby"))),
+        ready && (React.createElement("div", { className: "cp-card", style: { marginTop: 10 } },
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "0 0 6px" } }, "BACKUP READY"),
+            React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } },
+                ready.n,
+                " case",
+                ready.n === 1 ? "" : "s",
+                ", ",
+                ready.mb,
+                " MB. Hand it off now \u2014 this has to be a separate tap or iOS will not open the share sheet."),
+            React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap" } },
+                React.createElement("button", { className: "cp-btn cp-btn--go", onClick: onSendBackup },
+                    React.createElement(Upload, { size: 15 }),
+                    " Save / share the file"),
+                React.createElement("button", { className: "cp-btn", onClick: onCopyBackup }, "Copy as text")))),
+        pasteOpen && (React.createElement("div", { className: "cp-card", style: { marginTop: 10 } },
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "0 0 6px" } }, "PASTE A BACKUP"),
+            React.createElement("textarea", { className: "cp-ta", rows: 5, value: pasted, placeholder: "Paste the backup text here", onChange: e => setPasted(e.target.value) }),
+            React.createElement("div", { className: "cp-row", style: { gap: 6, marginTop: 6 } },
+                React.createElement("button", { className: "cp-btn cp-btn--go", onClick: () => onRestoreText(pasted), disabled: !pasted.trim() }, "Restore from text"),
+                React.createElement("button", { className: "cp-btn cp-btn--ghost", onClick: () => setPasteOpen(false) }, "Cancel")),
+            React.createElement("p", { className: "cp-hint" }, "Use this when the other copy could not produce a file. Copy there, paste here."))),
         nearby && React.createElement(Nearby, { onClose: () => setNearby(false), onStart: r => { setNearby(false); onNew(r); } }),
+        standalone && (React.createElement("p", { className: "cp-hint", style: { marginTop: 8 } }, "Running from the home screen. Printing opens in Safari, and saving goes through the share sheet \u2014 iOS gives installed apps no print dialog and no plain downloads.")),
         loading && React.createElement(CoinLoad, { label: "Reading case files" }),
         !loading && rows.length === 0 && (React.createElement("p", { className: "cp-empty" }, index.length === 0
             ? "No cases yet. Open one before you head out — the planning section is the point."
@@ -2379,7 +2343,9 @@ function CypherProtocol() {
     const wide = useWide();
     const fileIn = useRef(null);
     const [sync, setSync] = useState({ at: null, others: [], checked: false });
-    const [storeInfo, setStoreInfo] = useState(null);
+    const [ready, setReady] = useState(null); // a packed backup waiting to be handed off
+    const [pasteOpen, setPasteOpen] = useState(false);
+    const [pasted, setPasted] = useState("");
     const archiveCache = useRef(null);
     const backupCache = useRef(null);
     const fresh = useRef(new Set());
@@ -2392,22 +2358,6 @@ function CypherProtocol() {
             const probe = await S.set("cypher-protocol:probe", nowISO());
             if (!probe)
                 setErr(`Storage is not accepting writes here (${S.status().error || "unknown reason"}). The app still works, but anything you enter lives only until you close this page. If you are in Private Browsing, leave it and reopen normally.`);
-            // Ask the browser not to evict this site under storage pressure.
-            // Safari frequently declines, so treat it as a request and keep
-            // exporting backups regardless.
-            try {
-                if (navigator.storage && navigator.storage.persist)
-                    await navigator.storage.persist();
-            }
-            catch (e) { }
-            try {
-                if (navigator.storage && navigator.storage.estimate) {
-                    const est = await navigator.storage.estimate();
-                    if (est && est.quota)
-                        setStoreInfo({ usage: est.usage || 0, quota: est.quota });
-                }
-            }
-            catch (e) { }
         })();
     }, []);
     const writeIndex = async (next) => {
@@ -2533,7 +2483,7 @@ function CypherProtocol() {
         }
         const html = dossierHTML(items, [...DEFAULT_GEAR, ...gear]);
         archiveCache.current = html;
-        setTimeout(() => { archiveCache.current = null; }, 45000);
+        setTimeout(() => { archiveCache.current = null; }, 120000);
         if (asFile) {
             setBusy("");
             const r = await saveFile(`case-log-archive-${dateStamp()}.html`, html, "text/html");
@@ -2569,10 +2519,50 @@ function CypherProtocol() {
         }
         const text = JSON.stringify(payload);
         backupCache.current = text;
-        setTimeout(() => { backupCache.current = null; }, 120000);
+        setTimeout(() => { backupCache.current = null; }, 300000);
         setBusy("");
-        const r = await saveFile(`case-log-backup-${dateStamp()}.json`, text, "application/json");
-        setNote(`${payload.cases.length} case${payload.cases.length === 1 ? "" : "s"} packed. ` + saveResultMessage(r, "Backup"));
+        setReady({ text, n: payload.cases.length, mb: (text.length / 1048576).toFixed(1) });
+        setNote("");
+    };
+    /* Second tap. Runs straight off the press with the file already built, which
+       is the only way iOS will open the share sheet. */
+    const sendBackup = async () => {
+        if (!ready)
+            return;
+        const r = await saveFile(`cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
+        if (r === "shared" || r === "saved") {
+            setReady(null);
+            setNote("Backup handed off. Save it somewhere you will find it again.");
+        }
+        else if (r === "cancelled")
+            setNote("Cancelled — the backup is still packed and ready.");
+        else
+            setNote("That went to the download folder. If nothing appeared, this app cannot download; " +
+                "use Copy instead and paste it into Notes.");
+    };
+    const copyBackup = async () => {
+        if (!ready)
+            return;
+        try {
+            await navigator.clipboard.writeText(ready.text);
+            setNote("Backup copied. Paste it into Notes or Mail, then use Paste a backup on the other copy.");
+        }
+        catch (e) {
+            setNote("The clipboard refused (" + (e.message || "unknown") + "). Try the share sheet instead.");
+        }
+    };
+    const restoreText = async (text) => {
+        let obj;
+        try {
+            obj = JSON.parse(text.trim());
+        }
+        catch (e) {
+            setNote("That text is not a backup (" + (e.message || "could not read it") + ").");
+            return;
+        }
+        setPasteOpen(false);
+        setPasted("");
+        await applyBackup(obj);
     };
     const restore = async (file) => {
         setNote("Reading backup…");
@@ -2584,6 +2574,9 @@ function CypherProtocol() {
             setNote("That file is not readable JSON. Nothing was changed.");
             return;
         }
+        await applyBackup(obj);
+    };
+    const applyBackup = async (obj) => {
         const incoming = Array.isArray(obj && obj.cases) ? obj.cases
             : (obj && obj.caseNumber ? [obj] : null);
         if (!incoming || !incoming.length) {
@@ -2658,8 +2651,7 @@ function CypherProtocol() {
         React.createElement("div", { className: "cp-wrap", style: { paddingTop: 8, paddingBottom: 0 } },
             React.createElement("div", { className: "cp-syncbar cp-mono" },
                 React.createElement("span", { className: "cp-dot", "data-live": sync.others.length ? "1" : "0" }),
-                syncText,
-                storeInfo && React.createElement("span", { style: { marginLeft: "auto", opacity: .85 }, title: "Space this site is using on your device" }, `${space(storeInfo.usage)} of ${space(storeInfo.quota)}`))),
+                syncText)),
         busy && React.createElement(CoinLoad, { veil: true, label: busy }),
         note && React.createElement("div", { className: "cp-wrap", style: { paddingTop: 10 } },
             React.createElement("div", { className: "cp-note" },
@@ -2669,12 +2661,12 @@ function CypherProtocol() {
                 restore(f); } }),
         wide ? (React.createElement("div", { className: "cp-shell" },
             React.createElement("aside", { className: "cp-rail" },
-                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: backupAll, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId })),
+                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: backupAll, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId })),
             React.createElement("main", { className: "cp-detail" }, openId
                 ? React.createElement(CaseDetail, { key: openId, id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, rail: true })
                 : React.createElement("p", { className: "cp-empty", style: { paddingTop: 80 } }, "Pick a case on the left, or open a new one.")))) : (openId
             ? React.createElement(CaseDetail, { id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear })
-            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: backupAll, onImport: () => fileIn.current && fileIn.current.click() })),
+            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: backupAll, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onImport: () => fileIn.current && fileIn.current.click() })),
         confirm && (React.createElement("div", { style: {
                 position: "fixed", inset: 0, background: "rgba(4,6,8,.8)", display: "grid",
                 placeItems: "center", zIndex: 60, padding: 18
