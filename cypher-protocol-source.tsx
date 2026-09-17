@@ -1716,7 +1716,27 @@ async function photosFor(c) {
 
 // Opens the system print dialog against a hidden frame. Returns false if the
 // sandbox refuses, so the caller can fall back to downloading the file.
+/* An app launched from the home screen gets no print dialog and no ordinary
+   downloads on iOS. Everything that leaves the app has to go via the share
+   sheet or via Safari instead. */
+const isStandalone = () =>
+  (typeof navigator !== "undefined" && navigator.standalone === true) ||
+  (typeof matchMedia !== "undefined" && matchMedia("(display-mode: standalone)").matches);
+
+/* Hand a document to Safari, where printing works. Returns false if the
+   browser blocked the window, which it will unless this runs on a tap. */
+function openInBrowser(html) {
+  try {
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    return !!w;
+  } catch (e) { return false; }
+}
+
 function printDoc(html) {
+  if (isStandalone() && openInBrowser(html)) return true;
   try {
     const f = document.createElement("iframe");
     f.setAttribute("style", "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0");
@@ -2417,7 +2437,8 @@ function Nearby({ onStart, onClose }) {
   );
 }
 
-function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId }) {
+function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId,
+  ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone }) {
   const [nearby, setNearby] = useState(false);
   const [q, setQ] = useState("");
   const [desc, setDesc] = useState(true);
@@ -2472,6 +2493,9 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
           <button className="cp-btn cp-btn--sm" onClick={onImport}>
             <Upload size={15} /> Restore
           </button>
+          <button className="cp-btn cp-btn--sm" onClick={() => setPasteOpen(v => !v)} title="Restore from pasted text">
+            Paste
+          </button>
           <button className="cp-btn cp-btn--sm" onClick={downloadLogo} title="Save the seal as an SVG for letterhead">
             <Download size={15} /> Seal
           </button>
@@ -2482,8 +2506,52 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
         </div>
       </div>
 
+      {ready && (
+        <div className="cp-card" style={{ marginTop: 10 }}>
+          <p className="cp-mono" style={{ fontSize: 12, letterSpacing: ".12em", margin: "0 0 6px" }}>
+            BACKUP READY
+          </p>
+          <p className="cp-hint" style={{ marginTop: 0 }}>
+            {ready.n} case{ready.n === 1 ? "" : "s"}, {ready.mb} MB. Hand it off now — this has to be
+            a separate tap or iOS will not open the share sheet.
+          </p>
+          <div className="cp-row" style={{ gap: 6, flexWrap: "wrap" }}>
+            <button className="cp-btn cp-btn--go" onClick={onSendBackup}>
+              <Upload size={15} /> Save / share the file
+            </button>
+            <button className="cp-btn" onClick={onCopyBackup}>Copy as text</button>
+          </div>
+        </div>
+      )}
+
+      {pasteOpen && (
+        <div className="cp-card" style={{ marginTop: 10 }}>
+          <p className="cp-mono" style={{ fontSize: 12, letterSpacing: ".12em", margin: "0 0 6px" }}>
+            PASTE A BACKUP
+          </p>
+          <textarea className="cp-ta" rows={5} value={pasted} placeholder="Paste the backup text here"
+            onChange={e => setPasted(e.target.value)} />
+          <div className="cp-row" style={{ gap: 6, marginTop: 6 }}>
+            <button className="cp-btn cp-btn--go" onClick={() => onRestoreText(pasted)} disabled={!pasted.trim()}>
+              Restore from text
+            </button>
+            <button className="cp-btn cp-btn--ghost" onClick={() => setPasteOpen(false)}>Cancel</button>
+          </div>
+          <p className="cp-hint">
+            Use this when the other copy could not produce a file. Copy there, paste here.
+          </p>
+        </div>
+      )}
+
       {nearby && <Nearby onClose={() => setNearby(false)}
         onStart={r => { setNearby(false); onNew(r); }} />}
+
+      {standalone && (
+        <p className="cp-hint" style={{ marginTop: 8 }}>
+          Running from the home screen. Printing opens in Safari, and saving goes through the
+          share sheet — iOS gives installed apps no print dialog and no plain downloads.
+        </p>
+      )}
 
       {loading && <CoinLoad label="Reading case files" />}
       {!loading && rows.length === 0 && (
@@ -2533,6 +2601,9 @@ function CypherProtocol() {
   const wide = useWide();
   const fileIn = useRef(null);
   const [sync, setSync] = useState({ at: null, others: [], checked: false });
+  const [ready, setReady] = useState(null);      // a packed backup waiting to be handed off
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasted, setPasted] = useState("");
   const archiveCache = useRef(null);
   const backupCache = useRef(null);
   const fresh = useRef(new Set());
@@ -2693,10 +2764,39 @@ function CypherProtocol() {
     }
     const text = JSON.stringify(payload);
     backupCache.current = text;
-    setTimeout(() => { backupCache.current = null; }, 120000);
+    setTimeout(() => { backupCache.current = null; }, 300000);
     setBusy("");
-    const r = await saveFile(`case-log-backup-${dateStamp()}.json`, text, "application/json");
-    setNote(`${payload.cases.length} case${payload.cases.length === 1 ? "" : "s"} packed. ` + saveResultMessage(r, "Backup"));
+    setReady({ text, n: payload.cases.length, mb: (text.length / 1048576).toFixed(1) });
+    setNote("");
+  };
+
+  /* Second tap. Runs straight off the press with the file already built, which
+     is the only way iOS will open the share sheet. */
+  const sendBackup = async () => {
+    if (!ready) return;
+    const r = await saveFile(`cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
+    if (r === "shared" || r === "saved") { setReady(null); setNote("Backup handed off. Save it somewhere you will find it again."); }
+    else if (r === "cancelled") setNote("Cancelled — the backup is still packed and ready.");
+    else setNote("That went to the download folder. If nothing appeared, this app cannot download; " +
+      "use Copy instead and paste it into Notes.");
+  };
+
+  const copyBackup = async () => {
+    if (!ready) return;
+    try {
+      await navigator.clipboard.writeText(ready.text);
+      setNote("Backup copied. Paste it into Notes or Mail, then use Paste a backup on the other copy.");
+    } catch (e) {
+      setNote("The clipboard refused (" + (e.message || "unknown") + "). Try the share sheet instead.");
+    }
+  };
+
+  const restoreText = async text => {
+    let obj;
+    try { obj = JSON.parse(text.trim()); }
+    catch (e) { setNote("That text is not a backup (" + (e.message || "could not read it") + ")."); return; }
+    setPasteOpen(false); setPasted("");
+    await applyBackup(obj);
   };
 
   const restore = async file => {
@@ -2704,6 +2804,10 @@ function CypherProtocol() {
     let obj;
     try { obj = JSON.parse(await file.text()); }
     catch (e) { setNote("That file is not readable JSON. Nothing was changed."); return; }
+    await applyBackup(obj);
+  };
+
+  const applyBackup = async obj => {
     const incoming = Array.isArray(obj && obj.cases) ? obj.cases
       : (obj && obj.caseNumber ? [obj] : null);
     if (!incoming || !incoming.length) { setNote("No cases found in that file. Nothing was changed."); return; }
@@ -2767,7 +2871,9 @@ function CypherProtocol() {
         <div className="cp-shell">
           <aside className="cp-rail">
             <CaseList index={index} loading={loading} onOpen={setOpenId} onNew={newCase}
-              onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll}
+              onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
+            pasteOpen={pasteOpen} setPasteOpen={setPasteOpen} pasted={pasted} setPasted={setPasted}
+            onRestoreText={restoreText} standalone={isStandalone()}
               onImport={() => fileIn.current && fileIn.current.click()} rail activeId={openId} />
           </aside>
           <main className="cp-detail">
@@ -2782,7 +2888,9 @@ function CypherProtocol() {
         ? <CaseDetail id={openId} onBack={() => setOpenId(null)} onSaved={onSaved}
           gear={gear} addGear={addGear} removeGear={removeGear} />
         : <CaseList index={index} loading={loading} onOpen={setOpenId} onNew={newCase}
-          onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll}
+          onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
+            pasteOpen={pasteOpen} setPasteOpen={setPasteOpen} pasted={pasted} setPasted={setPasted}
+            onRestoreText={restoreText} standalone={isStandalone()}
           onImport={() => fileIn.current && fileIn.current.click()} />)}
 
       {confirm && (
