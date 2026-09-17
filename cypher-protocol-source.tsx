@@ -162,7 +162,10 @@ const APP_CSS = `
 
 /* ---------------------------- storage ---------------------------- */
 
-const MAX_VALUE_CHARS = 40_000_000; // IndexedDB is roomy; this is a sanity limit, not a platform one
+/* Per-item ceiling. Not a platform limit — IndexedDB's real constraint is the
+   browser's overall quota for this site. This just stops one enormous clip from
+   eating the whole budget. ~96MB of base64 is ~72MB of actual file. */
+const MAX_VALUE_CHARS = 96_000_000;
 
 let lastStorageError = "";
 let storageLive = null;            // null = untested, true = writing, false = session-only
@@ -1021,7 +1024,7 @@ function MediaSection({ caseId, media, log, pins, up }) {
   const store = async (dataUrl, kind, mime, name) => {
     setErr("");
     if (dataUrl.length > MAX_VALUE_CHARS) {
-      setErr(`"${name}" is about ${kb(dataUrl.length * 0.75)} once encoded, over the ~4.5 MB per-item storage ceiling. Nothing was saved and nothing was altered. Trim the clip or shoot at a lower resolution, then try again.`);
+      setErr(`"${name}" is about ${kb(dataUrl.length * 0.75)}, over the ${Math.round(MAX_VALUE_CHARS * 0.75 / 1048576)} MB per-item ceiling. Nothing was saved and nothing was altered. Trim the clip or shoot at a lower resolution, then try again.`);
       return;
     }
     const id = uid();
@@ -1029,10 +1032,14 @@ function MediaSection({ caseId, media, log, pins, up }) {
     try {
       ok = await S.set(K.media(caseId, id), { kind, mime, name, dataUrl });
     } catch (e) {
-      setErr(`"${name}" is too large for one storage slot, so it was not added to the case.`);
+      setErr(`"${name}" could not be stored (${(e && e.message) || "unknown reason"}). ` +
+        `If the browser is out of room for this site, back up your cases, then remove some ` +
+        `older video — video uses far more space than anything else here.`);
       return;
     }
-    if (!ok) setErr(`"${name}" is attached and usable now, but it did not reach permanent storage (${S.status().error || "unknown reason"}). Export the case to keep it.`);
+    if (!ok) setErr(`"${name}" is attached and usable right now, but it did not reach permanent ` +
+      `storage (${S.status().error || "unknown reason"}) — it will be gone when you close the app. ` +
+      `Usually that means storage for this site is full. Back up, then clear out some old video.`);
     setBlobs(b => ({ ...b, [id]: dataUrl }));
     up(p => ({
       ...p,
@@ -1153,8 +1160,11 @@ function MediaSection({ caseId, media, log, pins, up }) {
       <input ref={audioIn} type="file" accept="audio/*" multiple hidden onChange={e => onPick(e, "audio")} />
 
       <p className="cp-hint" style={{ marginTop: 10 }}>
-        Photos are resized and compressed before saving. Audio and video are stored as-is, so anything
-        over roughly 4.5 MB is refused with a message rather than half-saved.
+        Photos are resized and compressed before saving. Audio and video are stored as they are, so
+        they use far more room — a single item over about {Math.round(MAX_VALUE_CHARS * 0.75 / 1048576)} MB
+        is refused outright rather than half-saved. There is no fixed limit on how many you add; the real
+        ceiling is how much room the browser gives this site overall, and video is what fills it.
+        Back up regularly and the files survive anything that happens to the browser.
       </p>
 
       {photos.length > 0 && <>
@@ -2146,6 +2156,25 @@ async function queryWikipedia(lat, lon, radiusMi) {
   }));
 }
 
+
+/* Place name -> coordinate, via Photon (komoot's OpenStreetMap geocoder).
+   Photon's demo server is open for reasonable use. Deliberately fired only on
+   a button press, never as-you-type — nobody's free server deserves a request
+   per keystroke. */
+async function geocodePlace(q) {
+  const url = "https://photon.komoot.io/api/?limit=6&lang=en&q=" + encodeURIComponent(q);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("place lookup failed (" + res.status + ")");
+  const j = await res.json();
+  return (j.features || []).map(f => {
+    const c = (f.geometry && f.geometry.coordinates) || [];
+    const p = f.properties || {};
+    const bits = [p.name, p.city && p.city !== p.name ? p.city : null,
+                  p.state, p.country].filter(Boolean);
+    return { label: bits.join(", "), lat: c[1], lon: c[0] };
+  }).filter(r => isFinite(r.lat) && isFinite(r.lon));
+}
+
 function Nearby({ onStart, onClose }) {
   const [pos, setPos] = useState(null);
   const [radius, setRadius] = useState(15);
@@ -2155,10 +2184,48 @@ function Nearby({ onStart, onClose }) {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(null);
   const [want, setWant] = useState({ haunted: true, osm: true, wiki: true });
+  const [manual, setManual] = useState("");
+  const [showManual, setShowManual] = useState(false);
+  const [place, setPlace] = useState(null);      // the chosen place, once resolved
+  const [matches, setMatches] = useState([]);    // other candidates to switch to
+
+  /* Accepts "38.29, -85.76", "38.29 -85.76", or a Google Maps URL with
+     coordinates in it. Returns null if there is no usable pair. */
+  const readCoords = str => {
+    const m = String(str).match(/(-?\d{1,3}\.\d+)[,\s/@]+(-?\d{1,3}\.\d+)/);
+    if (!m) return null;
+    const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+    if (!isFinite(lat) || !isFinite(lon)) return null;
+    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    return { lat, lon };
+  };
 
   const run = async () => {
     setBusy(true); setRows([]); setWarn([]); setMsg("Getting your position");
     let here = pos;
+    const typed = readCoords(manual);
+    if (typed) {
+      here = typed;
+      setPlace(null); setMatches([]);
+    } else if (manual.trim()) {
+      // A place name. Look it up rather than asking for GPS.
+      setMsg("Looking up that place");
+      try {
+        const hits = await geocodePlace(manual.trim());
+        if (!hits.length) {
+          setBusy(false); setMsg("");
+          setWarn([`Could not find "${manual.trim()}". Try adding the state, or paste a coordinate.`]);
+          return;
+        }
+        here = { lat: hits[0].lat, lon: hits[0].lon };
+        setPlace(hits[0]);
+        setMatches(hits.slice(1));
+      } catch (e) {
+        setBusy(false); setMsg("");
+        setWarn(["Place lookup unavailable: " + e.message]);
+        return;
+      }
+    }
     if (!here) {
       try {
         here = await new Promise((res, rej) => {
@@ -2172,7 +2239,9 @@ function Nearby({ onStart, onClose }) {
         setPos(here);
       } catch (e) {
         setBusy(false); setMsg("");
-        setWarn([`Could not get your location: ${e.message}`]);
+        setShowManual(true);
+        setWarn([`Could not get your location: ${e.message}`,
+          "You can type a town and state below instead — the search works the same way."]);
         return;
       }
     }
@@ -2255,6 +2324,46 @@ function Nearby({ onStart, onClose }) {
         <Crosshair size={16} /> {busy ? "Searching…" : "Search around me"}
       </button>
 
+      <button className="cp-btn cp-btn--sm cp-btn--ghost" style={{ marginTop: 8 }}
+        onClick={() => setShowManual(v => !v)}>
+        {showManual ? "Hide place entry" : "Search a place instead"}
+      </button>
+
+      {showManual && (
+        <div style={{ marginTop: 8 }}>
+          <input className="cp-input" value={manual} inputMode="text"
+            placeholder="Clarksville, Indiana"
+            onChange={e => { setManual(e.target.value); setPlace(null); setMatches([]); }} />
+          <p className="cp-hint">
+            A town and state, an address, a landmark — or a coordinate if you have one.
+            Works when GPS is blocked, and lets you scout a place before driving out to it.
+            {readCoords(manual)
+              ? ` Reading that as the coordinate ${readCoords(manual).lat.toFixed(4)}, ${readCoords(manual).lon.toFixed(4)}.`
+              : ""}
+          </p>
+          {place && (
+            <p className="cp-hint" style={{ color: "var(--bone)" }}>
+              Searching from {place.label}.
+            </p>
+          )}
+          {matches.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <p className="cp-hint" style={{ marginBottom: 4 }}>Not the right one?</p>
+              <div className="cp-row" style={{ gap: 6, flexWrap: "wrap" }}>
+                {matches.map((m, i) => (
+                  <button key={i} className="cp-chip"
+                    onClick={() => { setPos({ lat: m.lat, lon: m.lon }); setPlace(m);
+                      setMatches(matches.filter((_, j) => j !== i).concat(place ? [place] : []));
+                      setManual(m.label); }}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {busy && <CoinLoad label={msg || "Searching"} />}
       {!busy && msg && <p className="cp-hint">{msg}</p>}
 
@@ -2266,7 +2375,8 @@ function Nearby({ onStart, onClose }) {
 
       {rows.length > 0 && (
         <p className="cp-hint" style={{ marginTop: 10 }}>
-          {rows.length} within {radius} miles. Many of these are private property —
+          {rows.length} within {radius} miles of {place ? place.label : readCoords(manual) ? "the coordinate you entered" : "your position"}.
+          Many of these are private property —
           the sources say nothing about whether you may legally be there.
         </p>
       )}
