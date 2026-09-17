@@ -2438,7 +2438,8 @@ function Nearby({ onStart, onClose }) {
 }
 
 function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId,
-  ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone }) {
+  ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone,
+  onReclaim }) {
   const [nearby, setNearby] = useState(false);
   const [q, setQ] = useState("");
   const [desc, setDesc] = useState(true);
@@ -2495,6 +2496,9 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
           </button>
           <button className="cp-btn cp-btn--sm" onClick={() => setPasteOpen(v => !v)} title="Restore from pasted text">
             Paste
+          </button>
+          <button className="cp-btn cp-btn--sm" onClick={onReclaim} title="Delete files left behind by deleted cases">
+            <Trash2 size={15} /> Reclaim
           </button>
           <button className="cp-btn cp-btn--sm" onClick={downloadLogo} title="Save the seal as an SVG for letterhead">
             <Download size={15} /> Seal
@@ -2601,6 +2605,7 @@ function CypherProtocol() {
   const wide = useWide();
   const fileIn = useRef(null);
   const [sync, setSync] = useState({ at: null, others: [], checked: false });
+  const [usage, setUsage] = useState(null);
   const [ready, setReady] = useState(null);      // a packed backup waiting to be handed off
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasted, setPasted] = useState("");
@@ -2665,9 +2670,58 @@ function CypherProtocol() {
     setConfirm(null);
     const keys = await S.list(`media:${c.id}:`);
     for (const k of keys) await S.del(k);
+    // Media lives under its own keys. Without this they survive the case that
+    // owned them and sit in storage forever, unreachable.
+    try {
+      for (const k of await S.list(`media:${c.id}:`)) await S.del(k);
+    } catch (e) { /* the case still goes */ }
     await S.del(K.case(c.id));
     await writeIndex(index.filter(x => x.id !== c.id));
   };
+
+  /* Sweep up media whose case is gone, or which no case refers to any more. */
+  const reclaim = async () => {
+    setBusy("Checking storage");
+    let keys = [];
+    try { keys = await S.list("media:"); }
+    catch (e) { setBusy(""); setNote("Could not read storage: " + (e.message || e)); return; }
+
+    // Every media id still claimed by a live case.
+    const live = new Set();
+    for (const row of index) {
+      const c = await S.get(K.case(row.id));
+      if (!c) continue;
+      for (const m of (c.media || [])) live.add(K.media(c.id, m.id));
+    }
+
+    let freed = 0, removed = 0;
+    for (const k of keys) {
+      if (live.has(k)) continue;
+      try {
+        const rec = await S.get(k);
+        freed += rec && rec.dataUrl ? rec.dataUrl.length * 0.75 : 0;
+      } catch (e) {}
+      await S.del(k);
+      removed++;
+    }
+    setBusy("");
+    setNote(removed
+      ? `Removed ${removed} orphaned file${removed === 1 ? "" : "s"}, about ${(freed / 1048576).toFixed(1)} MB. These belonged to cases that no longer exist.`
+      : "Nothing to clean up — every stored file belongs to a case.");
+    readUsage();
+  };
+
+  /* Storage meter. */
+  const readUsage = async () => {
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const e = await navigator.storage.estimate();
+        if (e && e.quota) setUsage({ used: e.usage || 0, quota: e.quota });
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => { readUsage(); }, [index.length]);
 
   // Poll the shared index so cases opened on another device show up here.
   useEffect(() => {
@@ -2854,8 +2908,13 @@ function CypherProtocol() {
       <style>{APP_CSS}</style>
       {err && <div className="cp-wrap" style={{ paddingTop: 10 }}><Warn>{err}</Warn></div>}
       <div className="cp-wrap" style={{ paddingTop: 8, paddingBottom: 0 }}>
-        <div className="cp-syncbar cp-mono">
-          <span className="cp-dot" data-live={sync.others.length ? "1" : "0"} />{syncText}
+        <div className="cp-syncbar cp-mono" style={{ justifyContent: "space-between" }}>
+          <span><span className="cp-dot" data-live={sync.others.length ? "1" : "0"} />{syncText}</span>
+          {usage && (
+            <span style={{ whiteSpace: "nowrap", opacity: .85 }}>
+              {(usage.used / 1073741824).toFixed(1)} GB of {(usage.quota / 1073741824).toFixed(1)} GB
+            </span>
+          )}
         </div>
       </div>
       {busy && <CoinLoad veil label={busy} />}
@@ -2873,7 +2932,7 @@ function CypherProtocol() {
             <CaseList index={index} loading={loading} onOpen={setOpenId} onNew={newCase}
               onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
             pasteOpen={pasteOpen} setPasteOpen={setPasteOpen} pasted={pasted} setPasted={setPasted}
-            onRestoreText={restoreText} standalone={isStandalone()}
+            onRestoreText={restoreText} standalone={isStandalone()} onReclaim={reclaim}
               onImport={() => fileIn.current && fileIn.current.click()} rail activeId={openId} />
           </aside>
           <main className="cp-detail">
@@ -2890,7 +2949,7 @@ function CypherProtocol() {
         : <CaseList index={index} loading={loading} onOpen={setOpenId} onNew={newCase}
           onDelete={c => setConfirm(c)} onArchive={printArchive} onBackup={backupAll} ready={ready} onSendBackup={sendBackup} onCopyBackup={copyBackup}
             pasteOpen={pasteOpen} setPasteOpen={setPasteOpen} pasted={pasted} setPasted={setPasted}
-            onRestoreText={restoreText} standalone={isStandalone()}
+            onRestoreText={restoreText} standalone={isStandalone()} onReclaim={reclaim}
           onImport={() => fileIn.current && fileIn.current.click()} />)}
 
       {confirm && (
