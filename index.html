@@ -388,6 +388,7 @@ async function compressImage(file, maxDim = 1600) {
     return out.length < raw.length ? out : raw;
 }
 const kb = n => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+const space = n => n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : `${Math.round(n / 1048576)} MB`;
 /* Sync scaffolding. There is no change-notification API, so every device
    polls the same keys and announces itself with a short-lived beacon. */
 const SESSION = uid();
@@ -1561,12 +1562,38 @@ function dossierHTML(cases, gear) {
 function downloadLogo() {
     saveFile("cypher-protocol-seal.svg", sealInk(512), "image/svg+xml");
 }
+/* A photographic plate prints about 2.4in wide, so 1000px is already more
+   detail than any printer resolves. Full-size shots are re-rendered down
+   before they enter the dossier: the browser has to decode every image in
+   that document into an uncompressed bitmap, and a 1600px photo costs about
+   7MB of memory to hold that way. A dozen of them is what was killing the
+   tab mid-print. */
+async function shrinkForPrint(dataUrl, maxDim = 1000) {
+    try {
+        const img = await loadImage(dataUrl);
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        if (scale === 1 && dataUrl.length < 400000)
+            return dataUrl;
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        const out = c.toDataURL("image/jpeg", 0.72);
+        c.width = c.height = 0; // drop the backing store now, not whenever
+        return out.length < dataUrl.length ? out : dataUrl;
+    }
+    catch (e) {
+        return dataUrl;
+    }
+}
 async function photosFor(c) {
     const out = {};
     for (const m of c.media.filter(x => x.kind === "photo")) {
         const rec = await S.get(K.media(c.id, m.id));
         if (rec && rec.dataUrl)
-            out[m.id] = rec.dataUrl;
+            out[m.id] = await shrinkForPrint(rec.dataUrl);
     }
     return out;
 }
@@ -1574,7 +1601,17 @@ async function photosFor(c) {
 // sandbox refuses, so the caller can fall back to downloading the file.
 function printDoc(html) {
     try {
+        // Tear down any frame left over from an earlier attempt first. Each one
+        // holds a whole second copy of the dossier, so a failed print followed
+        // by a retry used to put two of them in memory at the same time.
+        Array.prototype.forEach.call(document.querySelectorAll("iframe[data-cp-print]"), el => {
+            try {
+                el.remove();
+            }
+            catch (e) { }
+        });
         const f = document.createElement("iframe");
+        f.setAttribute("data-cp-print", "1");
         f.setAttribute("style", "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0");
         document.body.appendChild(f);
         const d = f.contentWindow.document;
@@ -1590,7 +1627,7 @@ function printDoc(html) {
             setTimeout(() => { try {
                 document.body.removeChild(f);
             }
-            catch (e) { } }, 120000);
+            catch (e) { } }, 60000);
         };
         let waited = 0;
         const tick = () => {
@@ -1734,6 +1771,10 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail }) {
         const html = await buildDoc();
         const ok = printDoc(html);
         setDbusy("");
+        // The assembled dossier can run to tens of megabytes of text. Once the
+        // print frame has it there is no reason to keep ours; rebuilding on the
+        // next tap is cheaper than carrying it around.
+        setTimeout(() => { docCache.current = null; }, 45000);
         setPrintMsg(ok
             ? "Print dialog opening. Choose Save as PDF. If no dialog appeared, use Download case file instead."
             : "The browser blocked printing. Use Download case file instead.");
@@ -2299,6 +2340,7 @@ function CypherProtocol() {
     const wide = useWide();
     const fileIn = useRef(null);
     const [sync, setSync] = useState({ at: null, others: [], checked: false });
+    const [storeInfo, setStoreInfo] = useState(null);
     const archiveCache = useRef(null);
     const backupCache = useRef(null);
     const fresh = useRef(new Set());
@@ -2311,6 +2353,22 @@ function CypherProtocol() {
             const probe = await S.set("cypher-protocol:probe", nowISO());
             if (!probe)
                 setErr(`Storage is not accepting writes here (${S.status().error || "unknown reason"}). The app still works, but anything you enter lives only until you close this page. If you are in Private Browsing, leave it and reopen normally.`);
+            // Ask the browser not to evict this site under storage pressure.
+            // Safari frequently declines, so treat it as a request and keep
+            // exporting backups regardless.
+            try {
+                if (navigator.storage && navigator.storage.persist)
+                    await navigator.storage.persist();
+            }
+            catch (e) { }
+            try {
+                if (navigator.storage && navigator.storage.estimate) {
+                    const est = await navigator.storage.estimate();
+                    if (est && est.quota)
+                        setStoreInfo({ usage: est.usage || 0, quota: est.quota });
+                }
+            }
+            catch (e) { }
         })();
     }, []);
     const writeIndex = async (next) => {
@@ -2436,7 +2494,7 @@ function CypherProtocol() {
         }
         const html = dossierHTML(items, [...DEFAULT_GEAR, ...gear]);
         archiveCache.current = html;
-        setTimeout(() => { archiveCache.current = null; }, 120000);
+        setTimeout(() => { archiveCache.current = null; }, 45000);
         if (asFile) {
             setBusy("");
             const r = await saveFile(`case-log-archive-${dateStamp()}.html`, html, "text/html");
@@ -2561,7 +2619,8 @@ function CypherProtocol() {
         React.createElement("div", { className: "cp-wrap", style: { paddingTop: 8, paddingBottom: 0 } },
             React.createElement("div", { className: "cp-syncbar cp-mono" },
                 React.createElement("span", { className: "cp-dot", "data-live": sync.others.length ? "1" : "0" }),
-                syncText)),
+                syncText,
+                storeInfo && React.createElement("span", { style: { marginLeft: "auto", opacity: .85 }, title: "Space this site is using on your device" }, `${space(storeInfo.usage)} of ${space(storeInfo.quota)}`))),
         busy && React.createElement(CoinLoad, { veil: true, label: busy }),
         note && React.createElement("div", { className: "cp-wrap", style: { paddingTop: 10 } },
             React.createElement("div", { className: "cp-note" },
