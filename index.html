@@ -58,6 +58,8 @@ const Trash2 = mkIcon('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-
 const Mic = mkIcon('<rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/>');
 const Square = mkIcon('<rect x="4" y="4" width="16" height="16" rx="2"/>');
 const Crosshair = mkIcon('<circle cx="12" cy="12" r="9"/><path d="M22 12h-4"/><path d="M6 12H2"/><path d="M12 6V2"/><path d="M12 22v-4"/>');
+const MapPin = mkIcon('<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>');
+const Bookmark = mkIcon('<path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2Z"/>');
 const Download = mkIcon('<path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/>');
 const Upload = mkIcon('<path d="M12 21V9"/><path d="m7 13 5-5 5 5"/><path d="M5 4h14"/>');
 const X = mkIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
@@ -170,6 +172,14 @@ const APP_CSS = `
 .cp-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .cp-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;}
 .cp-thumb{width:100%;aspect-ratio:1;object-fit:cover;border-radius:7px;border:1px solid var(--rule);display:block;}
+.cp-pick{position:relative;display:block;width:100%;padding:0;border:0;background:none;
+  cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.cp-pick[data-sel="1"] .cp-thumb{outline:3px solid var(--amber);outline-offset:-3px;opacity:.5;}
+.cp-tick{position:absolute;top:7px;right:7px;width:26px;height:26px;border-radius:999px;
+  background:rgba(8,12,16,.7);border:1.5px solid var(--bone);display:grid;place-items:center;
+  color:var(--bone);font-size:15px;line-height:1;font-weight:700;}
+.cp-pick[data-sel="1"] .cp-tick{background:var(--amber);border-color:var(--amber);color:#1A1206;}
+.cp-selbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;}
 .cp-map{height:260px;border-radius:8px;border:1px solid var(--rule);overflow:hidden;background:var(--panel2);}
 .cp-logline{border-left:2px solid var(--rule);padding:2px 0 2px 11px;margin:10px 0;}
 .cp-logline[data-tag="Anomaly"]{border-left-color:var(--red);}
@@ -304,7 +314,9 @@ const K = {
     index: "cypher-protocol:index",
     case: id => `case:${id}`,
     media: (cid, mid) => `media:${cid}:${mid}`,
-    gear: "cypher-protocol:gear"
+    gear: "cypher-protocol:gear",
+    locations: "cypher-protocol:locations",
+    backupMeta: "cypher-protocol:backupMeta"
 };
 /* ---------------------------- utils ------------------------------ */
 const pad = (n, w = 2) => String(n).padStart(w, "0");
@@ -388,6 +400,31 @@ async function compressImage(file, maxDim = 1600) {
     return out.length < raw.length ? out : raw;
 }
 const kb = n => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+/* One-shot position fix, promise-shaped. Resolves null on any failure —
+   no API, denied permission, timeout — so callers can stamp coordinates
+   opportunistically and never block a save on the GPS. */
+function currentPosition(timeout = 8000) {
+    return new Promise(resolve => {
+        if (!navigator.geolocation)
+            return resolve(null);
+        let done = false;
+        const finish = v => { if (!done) {
+            done = true;
+            resolve(v);
+        } };
+        try {
+            navigator.geolocation.getCurrentPosition(pos => finish({
+                lat: pos.coords.latitude.toFixed(6),
+                lng: pos.coords.longitude.toFixed(6),
+                accuracy: Math.round(pos.coords.accuracy)
+            }), () => finish(null), { enableHighAccuracy: true, timeout, maximumAge: 60000 });
+        }
+        catch (e) {
+            finish(null);
+        }
+        setTimeout(() => finish(null), timeout + 2000);
+    });
+}
 /* Sync scaffolding. There is no change-notification API, so every device
    polls the same keys and announces itself with a short-lived beacon. */
 const SESSION = uid();
@@ -507,6 +544,23 @@ const summarize = c => ({
     id: c.id, caseNumber: c.caseNumber, title: c.title, status: c.status,
     date: c.date, locationName: c.location.name, updatedAt: c.updatedAt
 });
+/* Everything readable inside a case, flattened to one lowercase string.
+   The case list searches this so a word buried in a witness account or a
+   log entry finds its case. A plain recursive walk — the case body holds
+   no data URLs (media lives under its own keys), so this stays small. */
+const caseHaystack = c => {
+    const parts = [];
+    const walk = v => {
+        if (typeof v === "string")
+            parts.push(v);
+        else if (Array.isArray(v))
+            v.forEach(walk);
+        else if (v && typeof v === "object")
+            Object.values(v).forEach(walk);
+    };
+    walk(c);
+    return parts.join("\n").toLowerCase();
+};
 /* ------------------------- primitives ---------------------------- */
 function Field({ label, value, onChange, placeholder, mono, type = "text", inputMode }) {
     return (React.createElement("div", null,
@@ -553,7 +607,36 @@ function PlanSection({ v, up }) {
         React.createElement(Area, { label: "Research done beforehand", value: v.research, onChange: x => set("research", x), placeholder: "Records, prior reports, sources checked" })));
 }
 /* --------------------- 2. Location profile ------------------------ */
-function LocationSection({ v, up }) {
+function LocationSection({ v, up, locations, onSaveLocation, onDeleteLocation }) {
+    const [pick, setPick] = useState("");
+    const [saveMsg, setSaveMsg] = useState("");
+    const saved = Array.isArray(locations) ? locations : [];
+    /* Fill this case from a saved location. Only the reusable fields move —
+       witnesses and prior reported activity belong to the case, not the site. */
+    const applyPick = () => {
+        const prof = saved.find(l => l.id === pick);
+        if (!prof)
+            return;
+        up(p => ({
+            ...p,
+            location: {
+                ...p.location,
+                name: prof.name || "", address: prof.address || "",
+                description: prof.description || "", age: prof.age || "",
+                access: prof.access || ""
+            }
+        }));
+        setSaveMsg(`Filled from “${prof.name}”.`);
+    };
+    const saveCurrent = () => {
+        if (!onSaveLocation || !v.name.trim())
+            return;
+        onSaveLocation({
+            name: v.name, address: v.address, description: v.description,
+            age: v.age, access: v.access
+        });
+        setSaveMsg(`Saved “${v.name.trim()}” — it will be offered on every case.`);
+    };
     const set = (k, val) => up(p => ({ ...p, location: { ...p.location, [k]: val } }));
     const setW = (id, k, val) => up(p => ({
         ...p,
@@ -574,12 +657,27 @@ function LocationSection({ v, up }) {
         location: { ...p.location, witnesses: p.location.witnesses.filter(w => w.id !== id) }
     }));
     return (React.createElement(React.Fragment, null,
+        saved.length > 0 && (React.createElement("div", { style: { marginBottom: 12 } },
+            React.createElement("label", { className: "cp-label" }, "Saved locations"),
+            React.createElement("div", { className: "cp-row" },
+                React.createElement("select", { className: "cp-select", style: { flex: 1 }, value: pick, onChange: e => setPick(e.target.value) },
+                    React.createElement("option", { value: "" }, "Choose a saved location\u2026"),
+                    saved.map(l => React.createElement("option", { key: l.id, value: l.id }, l.name))),
+                React.createElement("button", { className: "cp-btn cp-btn--sm", disabled: !pick, onClick: applyPick }, "Fill from saved"),
+                React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", disabled: !pick, onClick: () => { if (onDeleteLocation)
+                        onDeleteLocation(pick); setPick(""); setSaveMsg(""); }, "aria-label": "Remove saved location" },
+                    React.createElement(Trash2, { size: 14 }))))),
         React.createElement(Field, { label: "Location name", value: v.name, onChange: x => set("name", x), placeholder: "Old Jefferson Mill" }),
         React.createElement(Area, { label: "Address", value: v.address, onChange: x => set("address", x), rows: 2 }),
         React.createElement(Area, { label: "Description", value: v.description, onChange: x => set("description", x), placeholder: "Layout, condition, rooms of interest" }),
         React.createElement(Field, { label: "Structure age / history", value: v.age, onChange: x => set("age", x), placeholder: "Built 1878, mill until 1954, vacant since" }),
         React.createElement(Area, { label: "Prior reported activity", value: v.priorActivity, onChange: x => set("priorActivity", x) }),
         React.createElement(Area, { label: "Access notes", value: v.access, onChange: x => set("access", x), rows: 2, placeholder: "Gate codes, parking, which door, who to call" }),
+        onSaveLocation && (React.createElement("div", { style: { marginTop: 8 } },
+            React.createElement("button", { className: "cp-btn cp-btn--sm", disabled: !v.name.trim(), onClick: saveCurrent },
+                React.createElement(Bookmark, { size: 14 }),
+                " Save as a reusable location"),
+            saveMsg && React.createElement("p", { className: "cp-hint", style: { marginTop: 6 } }, saveMsg))),
         React.createElement("label", { className: "cp-label" }, "Witness testimony"),
         v.witnesses.length === 0 && React.createElement("p", { className: "cp-hint" }, "No witness accounts recorded."),
         v.witnesses.map(w => (React.createElement("div", { className: "cp-item", key: w.id },
@@ -879,20 +977,88 @@ function ReadingsSection({ rows, up }) {
 }
 /* ----------------------- 7. Session log --------------------------- */
 const SENSES = ["Sight", "Hearing", "Touch", "Smell", "Taste", "Instrument", "Other"];
-function LogSection({ log, up }) {
+function LogSection({ log, pins, up }) {
     const [text, setText] = useState("");
     const [tag, setTag] = useState("Observation");
+    /* Dictation. The Web Speech API is Chromium/Safari-only and prefixed in
+       both, so the button simply does not exist where it is unsupported. The
+       transcript lands in the entry box as ordinary text — editable before
+       it is added, like anything typed. */
+    const SR = (typeof window !== "undefined")
+        ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+    const [listening, setListening] = useState(false);
+    const recRef = useRef(null);
+    useEffect(() => () => {
+        if (recRef.current) {
+            try {
+                recRef.current.abort();
+            }
+            catch (e) { }
+            recRef.current = null;
+        }
+    }, []);
+    const toggleDictation = () => {
+        if (!SR)
+            return;
+        if (listening) {
+            try {
+                recRef.current && recRef.current.stop();
+            }
+            catch (e) { }
+            return;
+        }
+        let rec;
+        try {
+            rec = new SR();
+        }
+        catch (e) {
+            return;
+        }
+        rec.lang = (navigator.language || "en-US");
+        rec.interimResults = false;
+        rec.continuous = false;
+        rec.onresult = ev => {
+            let said = "";
+            for (let i = ev.resultIndex; i < ev.results.length; i++) {
+                if (ev.results[i].isFinal)
+                    said += ev.results[i][0].transcript;
+            }
+            said = said.trim();
+            if (said)
+                setText(prev => (prev.trim() ? prev.replace(/\s+$/, "") + " " + said : said));
+        };
+        rec.onend = () => { recRef.current = null; setListening(false); };
+        rec.onerror = () => { recRef.current = null; setListening(false); };
+        recRef.current = rec;
+        try {
+            rec.start();
+            setListening(true);
+        }
+        catch (e) {
+            recRef.current = null;
+        }
+    };
     const add = () => {
         const t = text.trim();
         if (!t)
             return;
         const entry = {
-            id: uid(), ts: nowISO(), tag, text: t,
+            id: uid(), ts: nowISO(), tag, text: t, geo: null,
             anomaly: tag === "Anomaly"
                 ? { perceived: "", sense: "", witnesses: "", natural: "" } : null
         };
         up(p => ({ ...p, log: [...p.log, entry] }));
         setText("");
+        /* Stamp the position on the entry — after it is saved, never instead
+           of saving it. Only offered once the case has a located pin (you are
+           on site, not planning at a desk), and any failure just leaves the
+           entry unstamped. */
+        if ((pins || []).some(p => p.lat && p.lng)) {
+            currentPosition().then(geo => {
+                if (geo)
+                    up(p => ({ ...p, log: p.log.map(e => e.id === entry.id ? { ...e, geo } : e) }));
+            });
+        }
     };
     const setA = (id, k, val) => up(p => ({
         ...p, log: p.log.map(e => e.id === id ? { ...e, anomaly: { ...(e.anomaly || {}), [k]: val } } : e)
@@ -903,9 +1069,15 @@ function LogSection({ log, up }) {
         React.createElement("textarea", { className: "cp-ta", rows: 2, value: text, placeholder: "What just happened?", onChange: e => setText(e.target.value), onKeyDown: e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
                 add(); } }),
         React.createElement("div", { className: "cp-row", style: { margin: "8px 0" } }, TAGS.map(t => (React.createElement("button", { key: t, className: "cp-tagbtn", "data-on": tag === t ? "1" : "0", "data-danger": t === "Anomaly" ? "1" : "0", onClick: () => setTag(t) }, t)))),
-        React.createElement("button", { className: "cp-btn cp-btn--go", style: { width: "100%" }, onClick: add },
-            React.createElement(Plus, { size: 17 }),
-            " Add timestamped entry"),
+        React.createElement("div", { className: "cp-row" },
+            React.createElement("button", { className: "cp-btn cp-btn--go", style: { flex: 1 }, onClick: add },
+                React.createElement(Plus, { size: 17 }),
+                " Add timestamped entry"),
+            SR && (React.createElement("button", { className: "cp-btn" + (listening ? " cp-btn--rec" : ""), onClick: toggleDictation, "aria-pressed": listening ? "true" : "false", title: listening ? "Stop dictation" : "Dictate the entry instead of typing it" },
+                React.createElement(Mic, { size: 17 }),
+                " ",
+                listening ? "Listening…" : "Dictate"))),
+        SR && listening && React.createElement("p", { className: "cp-hint", style: { marginTop: 6 } }, "Speak now \u2014 the words land in the box above, where you can fix them before adding."),
         entries.length === 0 && React.createElement("p", { className: "cp-empty" }, "Log is empty."),
         entries.map(e => (React.createElement("div", { className: "cp-logline", "data-tag": e.tag, key: e.id },
             React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between" } },
@@ -916,6 +1088,13 @@ function LogSection({ log, up }) {
                 React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => del(e.id), "aria-label": "Delete entry" },
                     React.createElement(Trash2, { size: 14 }))),
             React.createElement("div", { style: { fontSize: 15, whiteSpace: "pre-wrap" } }, e.text),
+            e.geo && (React.createElement("div", { className: "cp-ts cp-mono", style: { marginTop: 3 } },
+                React.createElement(MapPin, { size: 11 }),
+                " ",
+                e.geo.lat,
+                ", ",
+                e.geo.lng,
+                e.geo.accuracy ? ` · ±${e.geo.accuracy} m` : "")),
             e.anomaly && (React.createElement("div", { style: { marginTop: 6 } },
                 React.createElement(Area, { label: "What was perceived", rows: 2, value: e.anomaly.perceived, onChange: x => setA(e.id, "perceived", x) }),
                 React.createElement("label", { className: "cp-label" }, "Which sense"),
@@ -933,6 +1112,11 @@ function MediaSection({ caseId, media, log, pins, up }) {
     const [rec, setRec] = useState(null);
     const [secs, setSecs] = useState(0);
     const photoIn = useRef(null), camIn = useRef(null), audioIn = useRef(null), videoIn = useRef(null), vcamIn = useRef(null);
+    // Bulk delete. `armed` is the second tap — a mis-tap that wipes 40 photos
+    // is not something an undo-less app should allow on one press.
+    const [selMode, setSelMode] = useState(false);
+    const [sel, setSel] = useState({});
+    const [armed, setArmed] = useState(false);
     useEffect(() => {
         let dead = false;
         (async () => {
@@ -954,7 +1138,7 @@ function MediaSection({ caseId, media, log, pins, up }) {
         const t = setInterval(() => setSecs(s => s + 1), 1000);
         return () => clearInterval(t);
     }, [rec]);
-    const store = async (dataUrl, kind, mime, name) => {
+    const store = async (dataUrl, kind, mime, name, geo) => {
         setErr("");
         if (dataUrl.length > MAX_VALUE_CHARS) {
             setErr(`"${name}" is about ${kb(dataUrl.length * 0.75)}, over the ${Math.round(MAX_VALUE_CHARS * 0.75 / 1048576)} MB per-item ceiling. Nothing was saved and nothing was altered. Trim the clip or shoot at a lower resolution, then try again.`);
@@ -980,18 +1164,23 @@ function MediaSection({ caseId, media, log, pins, up }) {
             ...p,
             media: [...p.media, {
                     id, kind, mime, name, size: dataUrl.length, caption: "",
-                    ts: nowISO(), linkKind: "", linkId: ""
+                    ts: nowISO(), linkKind: "", linkId: "", geo: geo || null
                 }]
         }));
     };
     const onPick = async (e, kind) => {
         const files = Array.from(e.target.files || []);
         e.target.value = "";
+        /* Stamp new photos with where they were taken, when the case already
+           has a located pin (the same on-site signal the session log uses).
+           One fix for the whole batch; a failure just means no stamp. */
+        const geo = (kind === "photo" && (pins || []).some(p => p.lat && p.lng))
+            ? await currentPosition() : null;
         for (const f of files) {
             setBusy(`Processing ${f.name}…`);
             try {
                 const data = kind === "photo" ? await compressImage(f) : await readAsDataURL(f);
-                await store(data, kind, f.type || "application/octet-stream", f.name);
+                await store(data, kind, f.type || "application/octet-stream", f.name, geo);
             }
             catch (er) {
                 setErr(`${f.name}: ${er.message}`);
@@ -1040,6 +1229,15 @@ function MediaSection({ caseId, media, log, pins, up }) {
         setBlobs(b => { const n = { ...b }; delete n[id]; return n; });
         up(p => ({ ...p, media: p.media.filter(m => m.id !== id) }));
     };
+    const delMany = async (ids) => {
+        for (const id of ids)
+            await S.del(K.media(caseId, id));
+        setBlobs(b => { const nx = { ...b }; ids.forEach(i => delete nx[i]); return nx; });
+        up(p => ({ ...p, media: p.media.filter(m => ids.indexOf(m.id) === -1) }));
+        setSel({});
+        setArmed(false);
+        setSelMode(false);
+    };
     const linkOptions = [
         ...log.map(e => ({ v: `log:${e.id}`, l: `Log ${clockOf(e.ts)} — ${e.text.slice(0, 34)}` })),
         ...pins.map(p => ({ v: `pin:${p.id}`, l: `Pin — ${p.label || "unlabeled"}` }))
@@ -1061,7 +1259,8 @@ function MediaSection({ caseId, media, log, pins, up }) {
         React.createElement("div", { className: "cp-ts cp-mono", style: { marginTop: 4 } },
             clockOf(m.ts),
             " \u00B7 ",
-            kb(m.size * 0.75))));
+            kb(m.size * 0.75),
+            m.geo ? ` · ${m.geo.lat}, ${m.geo.lng}` : "")));
     return (React.createElement(React.Fragment, null,
         err && React.createElement(Warn, null, err),
         busy && React.createElement("p", { className: "cp-hint" }, busy),
@@ -1090,15 +1289,32 @@ function MediaSection({ caseId, media, log, pins, up }) {
             "Photos are resized and compressed before saving. Audio and video are stored as they are, so they use far more room \u2014 a single item over about ",
             Math.round(MAX_VALUE_CHARS * 0.75 / 1048576),
             " MB is refused outright rather than half-saved. There is no fixed limit on how many you add; the real ceiling is how much room the browser gives this site overall, and video is what fills it. Back up regularly and the files survive anything that happens to the browser."),
-        photos.length > 0 && React.createElement(React.Fragment, null,
-            React.createElement("label", { className: "cp-label" }, "Photos"),
-            React.createElement("div", { className: "cp-thumbs" }, photos.map(m => (React.createElement("div", { key: m.id }, blobs[m.id]
+        photos.length > 0 && (() => {
+            const picked = photos.filter(m => sel[m.id]).map(m => m.id);
+            const tile = m => (blobs[m.id]
                 ? React.createElement("img", { className: "cp-thumb", src: blobs[m.id], alt: m.caption || m.name })
                 : React.createElement("div", { className: "cp-thumb", style: { display: "grid", placeItems: "center" } },
-                    React.createElement("span", { className: "cp-hint" }, "\u2026")))))),
-            photos.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
-                React.createElement("strong", { style: { fontSize: 13 }, className: "cp-mono" }, m.name),
-                meta(m))))),
+                    React.createElement("span", { className: "cp-hint" }, "\u2026")));
+            return React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between", marginTop: 14 } },
+                    React.createElement("label", { className: "cp-label", style: { margin: 0 } }, `Photos (${photos.length})`),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setSelMode(v => !v); setSel({}); setArmed(false); } }, selMode ? "Done" : "Select")),
+                selMode && React.createElement("div", { className: "cp-selbar" },
+                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setArmed(false); setSel(Object.fromEntries(photos.map(m => [m.id, true]))); } }, "Select all"),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => { setSel({}); setArmed(false); } }, "Clear"),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm" + (armed ? " cp-btn--rec" : ""), disabled: picked.length === 0, onClick: () => armed ? delMany(picked) : setArmed(true) },
+                        React.createElement(Trash2, { size: 15 }),
+                        armed ? ` Delete ${picked.length} — tap again` : ` Delete ${picked.length}`)),
+                selMode && React.createElement("p", { className: "cp-hint" }, "Tap the shots you want gone. Deleting is permanent \u2014 there is no undo."),
+                React.createElement("div", { className: "cp-thumbs" }, photos.map(m => selMode
+                    ? React.createElement("button", { key: m.id, className: "cp-pick", "data-sel": sel[m.id] ? "1" : "0", "aria-pressed": !!sel[m.id], "aria-label": `${sel[m.id] ? "Deselect" : "Select"} ${m.name}`, onClick: () => { setArmed(false); setSel(x => ({ ...x, [m.id]: !x[m.id] })); } },
+                        tile(m),
+                        React.createElement("span", { className: "cp-tick" }, sel[m.id] ? "✓" : ""))
+                    : React.createElement("div", { key: m.id }, tile(m)))),
+                !selMode && photos.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
+                    React.createElement("strong", { style: { fontSize: 13 }, className: "cp-mono" }, m.name),
+                    meta(m)))));
+        })(),
         others.map(m => (React.createElement("div", { className: "cp-item", key: m.id },
             React.createElement("div", { className: "cp-row", style: { gap: 6 } },
                 m.kind === "audio" ? React.createElement(Play, { size: 15 }) : React.createElement(Film, { size: 15 }),
@@ -1221,6 +1437,8 @@ function toText(c, gear) {
         L.push("(empty)");
     [...c.log].sort((a, b) => a.ts.localeCompare(b.ts)).forEach(e => {
         L.push("", `  ${clockOf(e.ts)}  [${e.tag}]  ${e.text}`);
+        if (e.geo)
+            L.push(`     at ${e.geo.lat}, ${e.geo.lng}`);
         if (e.anomaly) {
             if (e.anomaly.perceived)
                 L.push(`     perceived: ${e.anomaly.perceived}`);
@@ -1235,7 +1453,7 @@ function toText(c, gear) {
     head("8. Media");
     if (!c.media.length)
         L.push("(none)");
-    c.media.forEach(m => L.push(`  ${clockOf(m.ts)}  ${m.kind}  ${m.name}${m.caption ? ` — ${m.caption}` : ""}${m.linkId ? `  [linked to ${m.linkKind} ${m.linkId}]` : ""}`));
+    c.media.forEach(m => L.push(`  ${clockOf(m.ts)}  ${m.kind}  ${m.name}${m.caption ? ` — ${m.caption}` : ""}${m.linkId ? `  [linked to ${m.linkKind} ${m.linkId}]` : ""}${m.geo ? `  [at ${m.geo.lat}, ${m.geo.lng}]` : ""}`));
     if (c.media.length)
         L.push("  (files themselves are in the JSON archive, not this text file)");
     head("9. Post-investigation analysis");
@@ -1629,17 +1847,34 @@ function printDoc(html) {
     }
 }
 /* ------------------------- case detail ---------------------------- */
-function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail }) {
+function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail, locations, onSaveLocation, onDeleteLocation, backupMeta, onSnoozeBackup, onExported }) {
     const [data, setData] = useState(null);
     const [open, setOpen] = useState({ 1: true });
     const [state, setState] = useState("Loading…");
     const [printMsg, setPrintMsg] = useState("");
     const [dbusy, setDbusy] = useState("");
     const [conflict, setConflict] = useState(null);
+    const [closeNudge, setCloseNudge] = useState(false);
     const saved = useRef("");
     const docCache = useRef(null);
     const dataRef = useRef(null);
     const savedSummary = useRef("");
+    const prevStatus = useRef(null);
+    /* Closing a case is the moment a backup matters most — the fieldwork is
+       done and the file just sits in the browser. Nudge once, right here,
+       unless reminders are snoozed. */
+    useEffect(() => {
+        if (!data)
+            return;
+        const prev = prevStatus.current;
+        prevStatus.current = data.status;
+        if (prev && prev !== "Closed" && data.status === "Closed") {
+            const snoozed = backupMeta && backupMeta.snoozedUntil &&
+                Date.parse(backupMeta.snoozedUntil) > Date.now();
+            if (!snoozed)
+                setCloseNudge(true);
+        }
+    }, [data && data.status]);
     useEffect(() => {
         let dead = false;
         (async () => {
@@ -1737,6 +1972,8 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail }) {
         }
         const r = await saveFile(`${data.caseNumber}.json`, JSON.stringify(payload, null, 2), "application/json");
         setPrintMsg(saveResultMessage(r, "JSON archive"));
+        if (r !== "cancelled" && onExported)
+            onExported();
     };
     if (!data)
         return React.createElement("div", { className: "cp-wrap" },
@@ -1796,10 +2033,18 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail }) {
                 React.createElement("div", { className: "cp-row", style: { marginTop: 8 } },
                     React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: takeRemote }, "Load theirs"),
                     React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => setConflict(null) }, "Keep mine"))))),
+        closeNudge && (React.createElement("div", { className: "cp-warn", style: { alignItems: "flex-start" } },
+            React.createElement(AlertTriangle, { size: 16, style: { flex: "0 0 auto", marginTop: 2 } }),
+            React.createElement("div", { style: { flex: 1 } },
+                "Case closed. It now lives only in this browser \u2014 export a backup (Back up notes, or the JSON archive below) so it survives the phone.",
+                React.createElement("div", { className: "cp-row", style: { marginTop: 8 } },
+                    React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => setCloseNudge(false) }, "Dismiss"),
+                    React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => { setCloseNudge(false); if (onSnoozeBackup)
+                            onSnoozeBackup(); } }, "Don\u2019t show for 30 days"))))),
         React.createElement(Section, { n: "1", title: "Pre-investigation planning", open: !!open[1], onToggle: () => toggle(1), summary: data.plan.permissionsObtained ? "permission ok" : "" },
             React.createElement(PlanSection, { v: data.plan, up: up })),
         React.createElement(Section, { n: "2", title: "Location profile", open: !!open[2], onToggle: () => toggle(2), summary: data.location.witnesses.length ? `${data.location.witnesses.length} witnesses` : "" },
-            React.createElement(LocationSection, { v: data.location, up: up })),
+            React.createElement(LocationSection, { v: data.location, up: up, locations: locations, onSaveLocation: onSaveLocation, onDeleteLocation: onDeleteLocation })),
         React.createElement(Section, { n: "3", title: "Map and coordinates", open: !!open[3], onToggle: () => toggle(3), summary: data.pins.length ? `${data.pins.length} pins` : "" },
             React.createElement(MapSection, { v: data, up: up })),
         React.createElement(Section, { n: "4", title: "Weather conditions", open: !!open[4], onToggle: () => toggle(4), summary: data.weather.temp || "" },
@@ -1809,7 +2054,7 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail }) {
         React.createElement(Section, { n: "6", title: "Environmental readings", open: !!open[6], onToggle: () => toggle(6), summary: data.readings.length ? `${data.readings.length} rows` : "" },
             React.createElement(ReadingsSection, { rows: data.readings, up: up })),
         React.createElement(Section, { n: "7", title: "Session log", open: !!open[7], onToggle: () => toggle(7), summary: data.log.length ? `${data.log.length} entries${anomalies ? ` · ${anomalies} anomalies` : ""}` : "" },
-            React.createElement(LogSection, { log: data.log, up: up })),
+            React.createElement(LogSection, { log: data.log, pins: data.pins, up: up })),
         React.createElement(Section, { n: "8", title: "Media", open: !!open[8], onToggle: () => toggle(8), summary: data.media.length ? `${data.media.length} files` : "" },
             React.createElement(MediaSection, { caseId: id, media: data.media, log: data.log, pins: data.pins, up: up })),
         React.createElement(Section, { n: "9", title: "Post-investigation analysis", open: !!open[9], onToggle: () => toggle(9), summary: data.analysis.followups.filter(f => !f.done).length ? `${data.analysis.followups.filter(f => !f.done).length} open` : "" },
@@ -2235,21 +2480,35 @@ function Nearby({ onStart, onClose }) {
                     React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: `https://maps.apple.com/?ll=${r.lat},${r.lon}&q=${encodeURIComponent(r.name)}`, target: "_blank", rel: "noreferrer" }, "Directions"),
                     r.url && (React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: r.url, target: "_blank", rel: "noreferrer" }, "Read"))))))))));
 }
-function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone, onReclaim, onPackCase }) {
+function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone, onReclaim, onPackCase, corpus }) {
     const [nearby, setNearby] = useState(false);
     const [q, setQ] = useState("");
     const [desc, setDesc] = useState(true);
-    const rows = useMemo(() => {
+    const { rows, deepIds } = useMemo(() => {
         const t = q.trim().toLowerCase();
-        const f = index.filter(c => !t ||
-            (c.title || "").toLowerCase().includes(t) ||
+        const deep = new Set();
+        const summaryHit = c => (c.title || "").toLowerCase().includes(t) ||
             (c.locationName || "").toLowerCase().includes(t) ||
-            (c.caseNumber || "").toLowerCase().includes(t));
-        return f.sort((a, b) => {
+            (c.caseNumber || "").toLowerCase().includes(t);
+        const f = index.filter(c => {
+            if (!t || summaryHit(c))
+                return true;
+            /* Full-text pass: the corpus holds everything inside the case —
+               log entries, witness accounts, planning, analysis — flattened
+               to one lowercase string per case by the app. */
+            const hay = corpus && corpus[c.id];
+            if (hay && hay.includes(t)) {
+                deep.add(c.id);
+                return true;
+            }
+            return false;
+        });
+        const sorted = f.sort((a, b) => {
             const r = (a.date || "").localeCompare(b.date || "") || (a.caseNumber || "").localeCompare(b.caseNumber || "");
             return desc ? -r : r;
         });
-    }, [index, q, desc]);
+        return { rows: sorted, deepIds: deep };
+    }, [index, q, desc, corpus]);
     return (React.createElement("div", { className: "cp-wrap" },
         React.createElement("div", { className: "cp-top" },
             React.createElement("div", { className: "cp-brand" },
@@ -2263,7 +2522,7 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
             React.createElement("div", { className: "cp-row", style: { marginTop: 10 } },
                 React.createElement("div", { style: { flex: 1, position: "relative", minWidth: 180 } },
                     React.createElement(Search, { size: 16, style: { position: "absolute", left: 11, top: 15, color: "var(--mute)" } }),
-                    React.createElement("input", { className: "cp-input", style: { paddingLeft: 34 }, value: q, placeholder: "Search title, location, case number", onChange: e => setQ(e.target.value) })),
+                    React.createElement("input", { className: "cp-input", style: { paddingLeft: 34 }, value: q, placeholder: "Search everything \u2014 titles, logs, witnesses, notes", onChange: e => setQ(e.target.value) })),
                 React.createElement("button", { className: "cp-btn cp-btn--icon", onClick: () => setDesc(d => !d), title: "Sort by date" }, desc ? "Newest" : "Oldest")),
             rail && (React.createElement("button", { className: "cp-btn cp-btn--go", style: { width: "100%", marginTop: 8 }, onClick: onNew },
                 React.createElement(Plus, { size: 18 }),
@@ -2324,6 +2583,7 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
                     React.createElement("span", { className: `cp-chip cp-chip--${c.status}` }, c.status)),
                 React.createElement("div", { style: { fontSize: 16, fontWeight: 550, margin: "4px 0 2px" } }, c.title || "Untitled case"),
                 React.createElement("div", { className: "cp-hint" }, c.locationName || "No location set"),
+                deepIds.has(c.id) && React.createElement("div", { className: "cp-hint", style: { color: "var(--amber)" } }, "Matches text inside the case"),
                 React.createElement("div", { className: "cp-hint cp-mono", style: { marginTop: 2 } }, c.date)),
             React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", title: "Export this case with its media", style: { position: "absolute", right: 52, bottom: 8 }, onClick: e => { e.stopPropagation(); onPackCase(c); } },
                 React.createElement(Download, { size: 15 })),
@@ -2350,14 +2610,23 @@ function CypherProtocol() {
     const [ready, setReady] = useState(null); // a packed backup waiting to be handed off
     const [pasteOpen, setPasteOpen] = useState(false);
     const [pasted, setPasted] = useState("");
+    const [locations, setLocations] = useState([]);
+    const [backupMeta, setBackupMeta] = useState(null);
+    const [metaLoaded, setMetaLoaded] = useState(false);
+    const [corpus, setCorpus] = useState({});
+    const [openNudge, setOpenNudge] = useState(false);
+    const nudgeChecked = useRef(false);
     const archiveCache = useRef(null);
     const backupCache = useRef(null);
     const fresh = useRef(new Set());
     useEffect(() => {
         (async () => {
-            const [i, g] = await Promise.all([S.get(K.index), S.get(K.gear)]);
+            const [i, g, locs, bm] = await Promise.all([S.get(K.index), S.get(K.gear), S.get(K.locations), S.get(K.backupMeta)]);
             setIndex(Array.isArray(i) ? i : []);
             setGear(Array.isArray(g) ? g : []);
+            setLocations(Array.isArray(locs) ? locs : []);
+            setBackupMeta(bm && typeof bm === "object" ? bm : null);
+            setMetaLoaded(true);
             setLoading(false);
             const probe = await S.set("cypher-protocol:probe", nowISO());
             if (!probe)
@@ -2371,6 +2640,90 @@ function CypherProtocol() {
         }
         catch (e) { }
     };
+    /* Backup bookkeeping: when the last export actually left the app, and
+       whether reminders are snoozed. Best-effort local timestamps only. */
+    const markExported = useCallback(() => {
+        setBackupMeta(prev => {
+            const m = { ...(prev || {}), lastExportAt: nowISO() };
+            S.set(K.backupMeta, m).catch(() => { });
+            return m;
+        });
+    }, []);
+    const snoozeBackup = useCallback(() => {
+        setBackupMeta(prev => {
+            const m = { ...(prev || {}), snoozedUntil: new Date(Date.now() + 30 * 86400000).toISOString() };
+            S.set(K.backupMeta, m).catch(() => { });
+            return m;
+        });
+        setOpenNudge(false);
+    }, []);
+    /* Reusable location profiles — the site, divorced from any one case. */
+    const saveLocation = useCallback(fields => {
+        const name = (fields.name || "").trim();
+        if (!name)
+            return;
+        setLocations(prev => {
+            const existing = prev.find(l => (l.name || "").trim().toLowerCase() === name.toLowerCase());
+            const prof = existing
+                ? { ...existing, ...fields, name, updatedAt: nowISO() }
+                : { id: uid(), ...fields, name, updatedAt: nowISO() };
+            const next = existing ? prev.map(l => (l.id === existing.id ? prof : l)) : [...prev, prof];
+            S.set(K.locations, next).catch(() => { });
+            return next;
+        });
+    }, []);
+    const deleteLocation = useCallback(id => {
+        setLocations(prev => {
+            const next = prev.filter(l => l.id !== id);
+            S.set(K.locations, next).catch(() => { });
+            return next;
+        });
+    }, []);
+    /* Keep the full-text search corpus in step with the cases. Every body
+       is re-read on each run — deliberately no timestamp cache: the detail
+       view only reports summary-visible changes upward, so a witness
+       account or a log entry can change without the index (or its
+       updatedAt) moving at all, and a cache keyed on it would freeze.
+       Case bodies are small (media lives under its own keys), so a plain
+       rescan is cheap. Runs when the index changes and whenever a case is
+       opened or closed, which brackets every editing session. */
+    useEffect(() => {
+        let dead = false;
+        (async () => {
+            const next = {};
+            for (const row of index) {
+                const c = await S.get(K.case(row.id));
+                if (dead)
+                    return;
+                if (c)
+                    next[row.id] = caseHaystack(c);
+            }
+            if (!dead)
+                setCorpus(next);
+        })();
+        return () => { dead = true; };
+    }, [index, openId]);
+    /* The on-open backup reminder: checked exactly once per launch, after
+       the store has loaded. Fires only when something has changed since the
+       newest export AND that export (or, with none, the oldest case edit)
+       is more than a week old. Snoozing silences it for 30 days. */
+    useEffect(() => {
+        if (loading || !metaLoaded || nudgeChecked.current)
+            return;
+        nudgeChecked.current = true;
+        if (!index.length)
+            return;
+        if (backupMeta && backupMeta.snoozedUntil && Date.parse(backupMeta.snoozedUntil) > Date.now())
+            return;
+        const lastExp = backupMeta && backupMeta.lastExportAt ? Date.parse(backupMeta.lastExportAt) : 0;
+        const edits = index.map(c => Date.parse(c.updatedAt || "") || 0);
+        const newestEdit = Math.max(0, ...edits);
+        if (newestEdit <= lastExp)
+            return;
+        const baseline = lastExp || Math.min(...edits);
+        if (Date.now() - baseline > 7 * 86400000)
+            setOpenNudge(true);
+    }, [loading, metaLoaded, index, backupMeta]);
     const onSaved = useCallback(sum => {
         setIndex(prev => {
             const next = prev.some(c => c.id === sum.id)
@@ -2569,7 +2922,7 @@ function CypherProtocol() {
         setBusy("Packing notes");
         try {
             const payload = { app: "cypher-protocol", version: 1, kind: "text-only",
-                exportedAt: nowISO(), customGear: gear, cases: [] };
+                exportedAt: nowISO(), customGear: gear, locations, cases: [] };
             for (const row of index) {
                 const c = await S.get(K.case(row.id));
                 if (c)
@@ -2608,7 +2961,7 @@ function CypherProtocol() {
                 mediaFiles[m.id] = rec;
             }
             const payload = { app: "cypher-protocol", version: 1, kind: "case",
-                exportedAt: nowISO(), customGear: gear, cases: [{ ...c, mediaFiles }] };
+                exportedAt: nowISO(), customGear: gear, locations, cases: [{ ...c, mediaFiles }] };
             const text = JSON.stringify(payload);
             setBusy("");
             setReady({ text, n: 1, mb: (text.length / 1048576).toFixed(1),
@@ -2630,6 +2983,8 @@ function CypherProtocol() {
         if (!ready)
             return;
         const r = await saveFile(ready.file || `cypher-protocol-backup-${dateStamp()}.json`, ready.text, "application/json");
+        if (r === "shared" || r === "saved" || r === "downloaded")
+            markExported();
         if (r === "shared" || r === "saved") {
             setReady(null);
             setNote("Backup handed off. Save it somewhere you will find it again.");
@@ -2645,6 +3000,7 @@ function CypherProtocol() {
             return;
         try {
             await navigator.clipboard.writeText(ready.text);
+            markExported();
             setNote("Backup copied. Paste it into Notes or Mail, then use Paste a backup on the other copy.");
         }
         catch (e) {
@@ -2724,6 +3080,25 @@ function CypherProtocol() {
             }
             catch (e) { }
         }
+        if (Array.isArray(obj.locations) && obj.locations.length) {
+            const byId = new Map();
+            for (const l of locations)
+                if (l && l.id)
+                    byId.set(l.id, l);
+            for (const l of obj.locations) {
+                if (!l || !l.id || typeof l.name !== "string")
+                    continue;
+                const cur = byId.get(l.id);
+                if (!cur || (l.updatedAt || "") >= (cur.updatedAt || ""))
+                    byId.set(l.id, l);
+            }
+            const mergedLocs = [...byId.values()];
+            setLocations(mergedLocs);
+            try {
+                await S.set(K.locations, mergedLocs);
+            }
+            catch (e) { }
+        }
         await writeIndex(next);
         setNote(`Restored ${added} new case${added === 1 ? "" : "s"}, updated ${updated}, left ${skipped} alone because this device already had them or newer.` +
             (mediaFail ? ` ${mediaFail} media file${mediaFail === 1 ? "" : "s"} would not fit in storage and were not restored.` : ""));
@@ -2763,16 +3138,25 @@ function CypherProtocol() {
             React.createElement("div", { className: "cp-note" },
                 note,
                 React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", style: { marginLeft: 8 }, onClick: () => setNote("") }, "Dismiss"))),
+        openNudge && (React.createElement("div", { className: "cp-wrap", style: { paddingTop: 10 } },
+            React.createElement("div", { className: "cp-warn", style: { alignItems: "flex-start" } },
+                React.createElement(AlertTriangle, { size: 16, style: { flex: "0 0 auto", marginTop: 2 } }),
+                React.createElement("div", { style: { flex: 1 } },
+                    "Your newest backup is over a week old and cases have changed since. Everything lives in this browser until a backup leaves it.",
+                    React.createElement("div", { className: "cp-row", style: { marginTop: 8 } },
+                        React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setOpenNudge(false); packText(); } }, "Back up notes now"),
+                        React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => setOpenNudge(false) }, "Dismiss"),
+                        React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: snoozeBackup }, "Don\u2019t show for 30 days")))))),
         React.createElement("input", { ref: fileIn, type: "file", accept: "application/json,.json", hidden: true, onChange: e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f)
                 restore(f); } }),
         wide ? (React.createElement("div", { className: "cp-shell" },
             React.createElement("aside", { className: "cp-rail" },
-                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId })),
+                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId, corpus: corpus })),
             React.createElement("main", { className: "cp-detail" }, openId
-                ? React.createElement(CaseDetail, { key: openId, id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, rail: true })
+                ? React.createElement(CaseDetail, { key: openId, id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, rail: true, locations: locations, onSaveLocation: saveLocation, onDeleteLocation: deleteLocation, backupMeta: backupMeta, onSnoozeBackup: snoozeBackup, onExported: markExported })
                 : React.createElement("p", { className: "cp-empty", style: { paddingTop: 80 } }, "Pick a case on the left, or open a new one.")))) : (openId
-            ? React.createElement(CaseDetail, { id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear })
-            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click() })),
+            ? React.createElement(CaseDetail, { id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, locations: locations, onSaveLocation: saveLocation, onDeleteLocation: deleteLocation, backupMeta: backupMeta, onSnoozeBackup: snoozeBackup, onExported: markExported })
+            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), corpus: corpus })),
         confirm && (React.createElement("div", { style: {
                 position: "fixed", inset: 0, background: "rgba(4,6,8,.8)", display: "grid",
                 placeItems: "center", zIndex: 60, padding: 18
