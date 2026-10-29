@@ -2773,6 +2773,7 @@ function CloudSyncPanel({ index, locations, onPulled }) {
     const [status, setStatus] = useState("");
     const [busy, setBusy] = useState(false);
     const [linkSent, setLinkSent] = useState(false);
+    const [delArm, setDelArm] = useState(false);
     const clientRef = useRef(null);
     const userRef = useRef(null);
     const syncingRef = useRef(false);
@@ -2841,7 +2842,11 @@ function CloudSyncPanel({ index, locations, onPulled }) {
     runSyncRef.current = runSync;
     /* A fresh sign-in (or a returning one found in storage) gets one
        full sync; token refreshes for the same account do not retrigger. */
-    useEffect(() => { userRef.current = user; }, [user]);
+    useEffect(() => {
+        userRef.current = user;
+        if (!user)
+            setDelArm(false);
+    }, [user]);
     useEffect(() => {
         if (!user) {
             syncedForRef.current = null;
@@ -2894,7 +2899,40 @@ function CloudSyncPanel({ index, locations, onPulled }) {
         }
         setUser(null);
         setLinkSent(false);
+        setDelArm(false);
         setStatus("");
+    };
+    /* Account deletion — required by the App Store for any app with
+       sign-in. One server-side function (public.delete_my_account,
+       applied from delete-account.sql) wipes the caller's cloud rows,
+       media objects and auth user; a SECURITY DEFINER RPC is the only
+       door a client has to auth.users. Local data is deliberately
+       untouched: this closes the cloud account, not this device. Only
+       an RPC success signs out — a failure stays signed in and reports
+       on the status line, like every other cloud problem. */
+    const deleteAccount = async () => {
+        const sb = clientRef.current || sbClient();
+        if (!sb || !userRef.current)
+            return;
+        clientRef.current = sb;
+        setBusy(true);
+        try {
+            const { error } = await sb.rpc("delete_my_account");
+            if (error)
+                throw error;
+            setDelArm(false);
+            try {
+                await sb.auth.signOut();
+            }
+            catch (e) { }
+            setUser(null);
+            setLinkSent(false);
+            setStatus("Account deleted — your cloud cases, locations and media are gone for good. The copies on this device were not touched.");
+        }
+        catch (e) {
+            setStatus("Could not delete the account: " + ((e && e.message) || String(e)));
+        }
+        setBusy(false);
     };
     /* No library, no panel — the app is exactly what it was. */
     if (!lib)
@@ -2915,7 +2953,16 @@ function CloudSyncPanel({ index, locations, onPulled }) {
                         " Sync now"),
                     React.createElement("button", { className: "cp-btn", onClick: signOut, disabled: busy },
                         React.createElement(LogOut, { size: 15 }),
-                        " Sign out")))) : (React.createElement(React.Fragment, null,
+                        " Sign out")),
+                React.createElement("div", { style: { marginTop: 14, borderTop: "1px solid var(--rule)", paddingTop: 12 } }, delArm ? (React.createElement(React.Fragment, null,
+                    React.createElement(Warn, null, "Permanently delete your account? Every case, saved location and media file in your cloud space is erased and the account is closed. This cannot be undone. Copies on this device are NOT deleted \u2014 they stay here, signed out."),
+                    React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap" } },
+                        React.createElement("button", { className: "cp-btn cp-btn--rec", onClick: deleteAccount, disabled: busy },
+                            React.createElement(Trash2, { size: 15 }),
+                            " Yes, delete my account"),
+                        React.createElement("button", { className: "cp-btn", onClick: () => setDelArm(false), disabled: busy }, "Keep my account")))) : (React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => setDelArm(true), disabled: busy },
+                    React.createElement(Trash2, { size: 14 }),
+                    " Delete account & cloud data"))))) : (React.createElement(React.Fragment, null,
                 React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } }, "Optional. Sign in and your cases and media back themselves up to a private cloud space, and show up on your other devices. No password \u2014 a sign-in link is emailed to you instead."),
                 React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap" } },
                     React.createElement("input", { className: "cp-input", style: { flex: 1, minWidth: 200 }, type: "email", inputMode: "email", autoComplete: "email", placeholder: "you@example.com", value: email, onChange: e => setEmail(e.target.value) }),
