@@ -612,7 +612,12 @@ const caseHaystack = c => {
    row-level security on the server decides what any sign-in may touch. */
 const SB_URL = "https://egnggggnjyljgkirfchr.supabase.co";
 const SB_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVnbmdnZ2duanlsamdraXJmY2hyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMyNzYzNDYsImV4cCI6MjEwODg1MjM0Nn0.8UQEUFEGB3g2HG9v8BiIBolVM1B1ntCDnW-F5BsZdns";
-const SB_APP_URL = "https://charliedgr8.github.io/index.htm/";
+/* The magic link must come back to whichever copy of the app asked for
+   it — the app is published at more than one address, and a link that
+   lands on a different copy signs THAT copy in, not this one. Taken
+   from the page's own URL (origin + path, no query/hash), so each
+   address returns the link to itself. */
+const sbAppUrl = () => window.location.origin + window.location.pathname;
 let sbClientCache = null;
 function sbClient() {
     if (sbClientCache)
@@ -3257,7 +3262,7 @@ function CloudSyncPanel({ index, locations, onPulled }) {
         try {
             const { error } = await sb.auth.signInWithOtp({
                 email: addr,
-                options: { emailRedirectTo: SB_APP_URL }
+                options: { emailRedirectTo: sbAppUrl() }
             });
             if (error)
                 throw error;
