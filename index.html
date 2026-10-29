@@ -72,6 +72,11 @@ const Printer = mkIcon('<path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5
 const Cloud = mkIcon('<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>');
 const Mail = mkIcon('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>');
 const LogOut = mkIcon('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>');
+const Moon = mkIcon('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>');
+const Lock = mkIcon('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>');
+const Unlock = mkIcon('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.7-1.5"/>');
+const Info = mkIcon('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>');
+const Ghost = mkIcon('<path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8Z"/>');
 /* ------------------------------------------------------------------ *
  * Cypher Protocol — field journal for paranormal investigations
  * Persistence via IndexedDB. Runs as a plain web page — no build step.
@@ -196,6 +201,38 @@ const APP_CSS = `
   font-size:11px;letter-spacing:.02em;}
 .cp-dot{width:7px;height:7px;border-radius:999px;background:#3C4B55;flex:0 0 auto;}
 .cp-dot[data-live="1"]{background:var(--green);}
+.cp-infoBtn{width:30px;height:30px;border-radius:999px;border:1px solid var(--rule);
+  background:none;color:var(--mute);cursor:pointer;display:inline-grid;place-items:center;
+  padding:0;flex:0 0 auto;}
+.cp-infoBtn:hover{color:var(--bone);border-color:#375061;}
+.cp-chip--ghost{color:#E9A63C;border-color:#5A431B;background:rgba(233,166,60,.1);
+  letter-spacing:.08em;}
+/* Ghost Mode — the red shift. Every colour in the app flows through the
+   variables on .cp-root, so flipping them flips the whole app: screens,
+   cards, the cloud panel and the danger zones all stay legible because
+   they were built on the same five tones. The few hard-coded colours in
+   the base sheet get matching overrides here. */
+.cp-root[data-ghost="1"]{
+  --ink:#0A0203; --panel:#170507; --panel2:#21080C; --rule:#4A161E;
+  --bone:#F4DAD3; --mute:#B57F74; --amber:#FF5340; --red:#FF2E1F; --green:#FF8A5C;
+}
+.cp-root[data-ghost="1"] .cp-top{background:rgba(10,2,3,.94);}
+.cp-root[data-ghost="1"] .cp-input::placeholder,.cp-root[data-ghost="1"] .cp-ta::placeholder{color:#71392F;}
+.cp-root[data-ghost="1"] .cp-btn:hover{border-color:#7A2A22;}
+.cp-root[data-ghost="1"] .cp-infoBtn:hover{border-color:#7A2A22;}
+.cp-root[data-ghost="1"] .cp-btn--go{color:#2B0503;}
+.cp-root[data-ghost="1"] .cp-pick[data-sel="1"] .cp-tick{color:#2B0503;}
+.cp-root[data-ghost="1"] .cp-input:focus,.cp-root[data-ghost="1"] .cp-ta:focus,
+.cp-root[data-ghost="1"] .cp-select:focus{box-shadow:0 0 0 2px rgba(255,83,64,.22);}
+.cp-root[data-ghost="1"] .cp-btn:focus-visible,.cp-root[data-ghost="1"] .cp-secHead:focus-visible{outline-color:var(--amber);}
+.cp-root[data-ghost="1"] .cp-chip--on{border-color:#6E231C;background:rgba(255,83,64,.14);}
+.cp-root[data-ghost="1"] .cp-chip--Active{border-color:#6E231C;background:rgba(255,83,64,.1);}
+.cp-root[data-ghost="1"] .cp-chip--Planned{color:#FF9D8A;border-color:#5C2A20;}
+.cp-root[data-ghost="1"] .cp-tagbtn[data-on="1"]{background:rgba(255,83,64,.12);}
+.cp-root[data-ghost="1"] .cp-warn{border-color:#6E231C;background:rgba(255,46,31,.12);color:#FFC9BC;}
+.cp-root[data-ghost="1"] .cp-note{border-color:#5C2E1A;background:rgba(255,110,60,.08);color:#FFC9A8;}
+.cp-root[data-ghost="1"] .cp-logline[data-tag="Personal Impression"]{border-left-color:#C96A4A;}
+.cp-root[data-ghost="1"] .cp-chip--ghost{color:#FF8A70;border-color:#6E3A1E;background:rgba(255,110,60,.12);}
 @media (prefers-reduced-motion: reduce){.cp-chev{transition:none;}}
 @media (min-width:980px){
   .cp-shell{display:grid;grid-template-columns:340px minmax(0,1fr);gap:22px;
@@ -319,7 +356,10 @@ const K = {
     media: (cid, mid) => `media:${cid}:${mid}`,
     gear: "cypher-protocol:gear",
     locations: "cypher-protocol:locations",
-    backupMeta: "cypher-protocol:backupMeta"
+    backupMeta: "cypher-protocol:backupMeta",
+    prefs: "cypher-protocol:prefs",
+    ghost: "cypher-protocol:ghost",
+    ghostPending: "cypher-protocol:ghostPending"
 };
 /* ---------------------------- utils ------------------------------ */
 const pad = (n, w = 2) => String(n).padStart(w, "0");
@@ -622,6 +662,109 @@ const blobToDataUrl = blob => new Promise((resolve, reject) => {
    format, so string order would lie). Sync only ever adds or updates —
    a case deleted on one device is NOT deleted anywhere else. */
 const stampOf = v => Date.parse(v || "") || 0;
+/* --------------------------- ghost mode ---------------------------- */
+/* Ghost Mode, the working half. The red palette lives in CSS; this is
+   the privacy machinery: a PIN that exists only as a salted SHA-256
+   digest, cases flagged `ghost: true` that the sync engine refuses to
+   touch, and a purge that takes a ghosted case back out of the cloud.
+   Everything here is local-first like the rest of the app — no PIN, no
+   cloud and no WebCrypto simply means no ghosting, never a broken app. */
+const ghostCryptoOk = () => typeof window !== "undefined" && !!window.crypto &&
+    !!window.crypto.subtle && typeof window.crypto.subtle.digest === "function";
+async function ghostPinHash(pin, salt) {
+    const buf = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(salt + ":" + pin));
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+const ghostSalt = () => [...window.crypto.getRandomValues(new Uint8Array(16))]
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+async function ghostPinCheck(pin) {
+    const rec = await S.get(K.ghost);
+    if (!rec || !rec.salt || !rec.hash || !ghostCryptoOk())
+        return false;
+    try {
+        return (await ghostPinHash(pin, rec.salt)) === rec.hash;
+    }
+    catch (e) {
+        return false;
+    }
+}
+/* Cases ghosted while nobody was signed in still owe the cloud a
+   deletion. The debt is recorded here and the sync engine settles it
+   on its next run. */
+async function ghostQueuePurge(caseId) {
+    const list = (await S.get(K.ghostPending)) || [];
+    if (!list.includes(caseId)) {
+        list.push(caseId);
+        await S.set(K.ghostPending, list);
+    }
+}
+/* Take one case out of the cloud: its media objects, its row, and this
+   device's upload marks (so un-ghosting and re-syncing later starts
+   clean). Returns true only when the cloud is verifiably rid of it —
+   any failure means "not now", and the caller keeps the purge queued. */
+async function ghostPurgeCloud(sb, u, caseId) {
+    try {
+        const listed = await sb.storage.from("media")
+            .list(`${u.id}/${caseId}`, { limit: 1000 });
+        if (listed.error)
+            return false;
+        const paths = new Set(((listed.data || []).filter(o => o && o.name)
+            .map(o => `${u.id}/${caseId}/${o.name}`)));
+        const c = await S.get(K.case(caseId));
+        for (const m of (c && c.media) || [])
+            paths.add(`${u.id}/${caseId}/${m.id}`);
+        if (paths.size) {
+            const { error } = await sb.storage.from("media").remove([...paths]);
+            if (error)
+                return false;
+        }
+        const { error: derr } = await sb.from("cases").delete().eq("id", caseId);
+        if (derr)
+            return false;
+        if (c) {
+            for (const m of c.media || []) {
+                const rec = await S.get(K.media(caseId, m.id));
+                if (rec && rec.cloud) {
+                    const { cloud, ...rest } = rec;
+                    await S.set(K.media(caseId, m.id), rest);
+                }
+            }
+        }
+        return true;
+    }
+    catch (e) {
+        return false;
+    }
+}
+/* The detail view asks for a purge; the CloudSyncPanel owns the client
+   and the session, so it does the work and answers on a second event.
+   Signed out, library missing, panel busy — the answer is simply
+   "not done", and the requester queues the purge instead. */
+function ghostRequestPurge(caseId) {
+    return new Promise(res => {
+        let settled = false;
+        const finish = v => {
+            if (settled)
+                return;
+            settled = true;
+            window.removeEventListener("cp-ghost-purged", onAns);
+            res(v);
+        };
+        const onAns = e => {
+            if (e && e.detail && e.detail.id === caseId)
+                finish(!!e.detail.done);
+        };
+        window.addEventListener("cp-ghost-purged", onAns);
+        try {
+            window.dispatchEvent(new CustomEvent("cp-ghost-purge", { detail: { id: caseId } }));
+        }
+        catch (e) {
+            finish(false);
+            return;
+        }
+        setTimeout(() => finish(false), 3000);
+    });
+}
 async function pullFromCloud(sb, u, hooks) {
     const { data: rows, error } = await sb.from("cases").select("id,data,updated_at");
     if (error)
@@ -633,6 +776,11 @@ async function pullFromCloud(sb, u, hooks) {
         if (!remote || !remote.id)
             continue;
         const local = await S.get(K.case(remote.id));
+        /* A ghost case takes no orders from the cloud. It should not be
+           there at all; if a stale copy somehow is, it never overwrites
+           — or resurrects — the local ghost. */
+        if (local && local.ghost)
+            continue;
         if (local && stampOf(local.updatedAt) >= stampOf(r.updated_at || remote.updatedAt))
             continue;
         await S.set(K.case(remote.id), remote);
@@ -671,7 +819,7 @@ async function pullFromCloud(sb, u, hooks) {
     idx = (await S.get(K.index)) || [];
     for (const row of idx) {
         const c = await S.get(K.case(row.id));
-        if (!c)
+        if (!c || c.ghost)
             continue;
         for (const m of c.media || []) {
             const rec = await S.get(K.media(c.id, m.id));
@@ -693,11 +841,27 @@ async function pullFromCloud(sb, u, hooks) {
     }
 }
 async function pushToCloud(sb, u) {
+    /* Ghost housekeeping comes first: cases that were ghosted while
+       offline or signed out owe the cloud a deletion, and a signed-in
+       sync is where the debt gets settled. A purge that fails stays
+       queued for the next sync — it never blocks the push itself. */
+    const pending = (await S.get(K.ghostPending)) || [];
+    if (pending.length) {
+        const remain = [];
+        for (const cid of pending) {
+            if (!(await ghostPurgeCloud(sb, u, cid)))
+                remain.push(cid);
+        }
+        if (remain.length !== pending.length)
+            await S.set(K.ghostPending, remain);
+    }
     const idx = (await S.get(K.index)) || [];
     const cases = [];
     for (const row of idx) {
         const c = await S.get(K.case(row.id));
-        if (c && c.id)
+        /* Ghost cases are never synced — no upsert, and because the media
+           pass below walks this same list, no media upload either. */
+        if (c && c.id && !c.ghost)
             cases.push(c);
     }
     if (cases.length) {
@@ -1542,6 +1706,11 @@ function toText(c, gear) {
     const line = (k, v) => { if (v !== undefined && v !== null && String(v).trim() !== "")
         L.push(`${k}: ${v}`); };
     const head = t => { L.push("", "-".repeat(58), t.toUpperCase(), "-".repeat(58)); };
+    /* A ghost case reports everything except where it happened: no
+       address, no directions, no pins, no coordinate stamps anywhere in
+       this file. The JSON archive keeps it all — that one never leaves
+       the investigator's own hands. */
+    const ghost = !!c.ghost;
     L.push("THRESHOLD — FIELD RECORD", "=".repeat(58));
     line("Case number", c.caseNumber);
     line("Title", c.title || "(untitled)");
@@ -1549,6 +1718,8 @@ function toText(c, gear) {
     line("Date", c.date);
     line("Opened", c.createdAt);
     line("Last updated", c.updatedAt);
+    if (ghost)
+        L.push("", "GHOST CASE — its location is withheld from this report.");
     head("1. Pre-investigation planning");
     line("Objective / hypothesis", c.plan.objective);
     line("Team", c.plan.team);
@@ -1560,22 +1731,31 @@ function toText(c, gear) {
     line("Prior research", c.plan.research);
     head("2. Location profile");
     line("Name", c.location.name);
-    line("Address", c.location.address);
-    line("Description", c.location.description);
+    if (ghost) {
+        L.push("Location detail: Location withheld — ghost case");
+    }
+    else {
+        line("Address", c.location.address);
+        line("Description", c.location.description);
+    }
     line("Structure age / history", c.location.age);
     line("Prior reported activity", c.location.priorActivity);
-    line("Access notes", c.location.access);
+    if (!ghost)
+        line("Access notes", c.location.access);
     c.location.witnesses.forEach((w, i) => {
         L.push("", `  Witness ${i + 1}: ${w.name || "unnamed"} (experience dated ${w.date || "unknown"})`);
         if (w.account)
             L.push(`  ${w.account}`);
     });
     head("3. Map and coordinates");
-    if (!c.pins.length)
+    if (ghost)
+        L.push("Location withheld — ghost case");
+    else if (!c.pins.length)
         L.push("(no pins)");
-    c.pins.forEach(p => {
-        L.push(`  ${p.label || "unlabeled"} — ${p.lat || "?"}, ${p.lng || "?"}${p.note ? ` — ${p.note}` : ""}`);
-    });
+    else
+        c.pins.forEach(p => {
+            L.push(`  ${p.label || "unlabeled"} — ${p.lat || "?"}, ${p.lng || "?"}${p.note ? ` — ${p.note}` : ""}`);
+        });
     head("4. Weather conditions");
     line("Temperature", c.weather.temp);
     line("Humidity", c.weather.humidity);
@@ -1606,7 +1786,7 @@ function toText(c, gear) {
         L.push("(empty)");
     [...c.log].sort((a, b) => a.ts.localeCompare(b.ts)).forEach(e => {
         L.push("", `  ${clockOf(e.ts)}  [${e.tag}]  ${e.text}`);
-        if (e.geo)
+        if (e.geo && !ghost)
             L.push(`     at ${e.geo.lat}, ${e.geo.lng}`);
         if (e.anomaly) {
             if (e.anomaly.perceived)
@@ -1622,7 +1802,7 @@ function toText(c, gear) {
     head("8. Media");
     if (!c.media.length)
         L.push("(none)");
-    c.media.forEach(m => L.push(`  ${clockOf(m.ts)}  ${m.kind}  ${m.name}${m.caption ? ` — ${m.caption}` : ""}${m.linkId ? `  [linked to ${m.linkKind} ${m.linkId}]` : ""}${m.geo ? `  [at ${m.geo.lat}, ${m.geo.lng}]` : ""}`));
+    c.media.forEach(m => L.push(`  ${clockOf(m.ts)}  ${m.kind}  ${m.name}${m.caption ? ` — ${m.caption}` : ""}${m.linkId ? `  [linked to ${m.linkKind} ${m.linkId}]` : ""}${m.geo && !ghost ? `  [at ${m.geo.lat}, ${m.geo.lng}]` : ""}`));
     if (c.media.length)
         L.push("  (files themselves are in the JSON archive, not this text file)");
     head("9. Post-investigation analysis");
@@ -1775,6 +1955,9 @@ function secHead(n, title) {
 }
 function dossierCase(c, gear, photos) {
     const P = [];
+    /* Ghost cases print with their location stripped — same rule as the
+       text report: no address, no directions, no coordinate table. */
+    const ghost = !!c.ghost;
     const stampable = c.status === "Closed" ? "case closed" : c.status === "Active" ? "active file" : "planned";
     P.push(`<div class="case">`);
     /* masthead */
@@ -1806,15 +1989,15 @@ function dossierCase(c, gear, photos) {
       <p style="margin:3px 0 0">${val(w.account)}</p></div>`).join("");
     P.push(`<div class="sec">${secHead(2, "Location profile")}
     <div class="two">${fld("Location name", c.location.name)}${fld("Structure age / history", c.location.age)}</div>
-    ${fld("Address", c.location.address)}
-    ${fld("Description", c.location.description)}
+    ${fld("Address", ghost ? "Location withheld — ghost case" : c.location.address)}
+    ${ghost ? "" : fld("Description", c.location.description)}
     ${fld("Prior reported activity", c.location.priorActivity)}
-    ${fld("Access notes", c.location.access)}
+    ${ghost ? "" : fld("Access notes", c.location.access)}
     <div class="sub">Witness testimony</div>
     ${wit || `<p>${NIL}</p>`}
   </div>`);
     /* 3 */
-    const pins = c.pins.length ? `<table><thead><tr><th>Ref</th><th>Label</th><th>Latitude</th><th>Longitude</th><th>Note</th></tr></thead><tbody>
+    const pins = ghost ? `<p>Location withheld — ghost case</p>` : c.pins.length ? `<table><thead><tr><th>Ref</th><th>Label</th><th>Latitude</th><th>Longitude</th><th>Note</th></tr></thead><tbody>
     ${c.pins.map((p, i) => `<tr><td class="m">P-${pad(i + 1)}</td><td>${val(p.label)}</td>
       <td class="m">${val(p.lat)}</td><td class="m">${val(p.lng)}</td><td>${val(p.note)}</td></tr>`).join("")}
     </tbody></table>` : `<p>${NIL}</p>`;
@@ -2016,6 +2199,74 @@ function printDoc(html) {
     }
 }
 /* ------------------------- case detail ---------------------------- */
+/* The Ghost Mode explainer. Reachable from the ⓘ button beside the
+   mode switch and beside the per-case control — and deliberately
+   reachable without unlocking anything, because it is also where the
+   PIN warning lives. Plain language, no sales copy: what the red is
+   for, what a ghost case is, the GPS rule, and the one warning that
+   cannot be repeated too often. */
+function GhostInfo({ onClose }) {
+    return (React.createElement("div", { style: {
+            position: "fixed", inset: 0, background: "rgba(4,6,8,.85)", display: "grid",
+            placeItems: "center", zIndex: 70, padding: 18
+        }, onClick: onClose },
+        React.createElement("div", { className: "cp-card", style: { maxWidth: 430, padding: 18, maxHeight: "86vh", overflowY: "auto" }, onClick: e => e.stopPropagation() },
+            React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between" } },
+                React.createElement("h3", { style: { margin: 0, fontSize: 17 } }, "Ghost Mode, explained"),
+                React.createElement("button", { className: "cp-infoBtn", onClick: onClose, "aria-label": "Close explanation" },
+                    React.createElement(X, { size: 15 }))),
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "14px 0 4px" } }, "THE RED LIGHT"),
+            React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } }, "The Ghost Mode switch turns the whole app red on black. Red light does not wreck your night vision, and it does not carry across a field the way a white screen does \u2014 so you can work the file in the dark without announcing yourself. It is only a colour change. On its own, it hides nothing."),
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "14px 0 4px" } }, "GHOST CASES"),
+            React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } }, "Any case can be made a ghost, from inside the case. A ghost case disappears \u2014 from the list, from the count, from search. It is not shown as locked. It is not shown at all, until you unlock it with your PIN."),
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "14px 0 4px" } }, "THE GPS RULE"),
+            React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } }, "Ghost cases never sync. Their coordinates stay on this device, they are kept out of your cloud space, and if a copy is already up there when you ghost the case, it is deleted. Printed and text reports replace the address, the map pins and every coordinate with \u201CLocation withheld \u2014 ghost case\u201D. A JSON archive backup still holds the whole case, ghost flag and all \u2014 that file is your private copy, and the case stays a ghost wherever it is restored."),
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "14px 0 4px" } }, "LOCKING AND UNLOCKING"),
+            React.createElement("p", { className: "cp-hint", style: { marginTop: 0 } }, "Unlock with the \u201CUnlock ghost cases\u201D button beside the Ghost Mode switch. Ghost cases come back for this session, marked with a ghost tag. Lock them again with the same control, or just close the app \u2014 they hide themselves either way."),
+            React.createElement(Warn, null, "There is no PIN recovery. Forget the PIN and the ghost cases stay hidden \u2014 no reset, no back door, and a backup does not help: it carries the same PIN. Keep it somewhere that is not this phone."),
+            React.createElement("button", { className: "cp-btn cp-btn--go", style: { width: "100%", marginTop: 12 }, onClick: onClose }, "Got it"))));
+}
+/* The Ghost Mode control cluster: the red-mode switch, its ⓘ button,
+   and the ghost-case lock control. Lives above the case list and the
+   detail alike, so locking is always one tap away. */
+function GhostModeBar({ red, onToggleRed, unlocked, ghostCount, onUnlock, onLock }) {
+    const [info, setInfo] = useState(false);
+    const [pad, setPad] = useState(false);
+    const [pin, setPin] = useState("");
+    const [pinErr, setPinErr] = useState("");
+    const closePad = () => { setPad(false); setPin(""); setPinErr(""); };
+    const attempt = async () => {
+        if (await onUnlock(pin)) {
+            closePad();
+            return;
+        }
+        setPin("");
+        setPinErr("That PIN doesn't open it.");
+    };
+    return (React.createElement("div", { className: "cp-wrap", style: { paddingTop: 8, paddingBottom: 0 } },
+        React.createElement("div", { className: "cp-row", style: { gap: 6 } },
+            React.createElement("button", { className: "cp-btn cp-btn--sm" + (red ? " cp-btn--go" : ""), onClick: onToggleRed, "aria-pressed": red ? "true" : "false" },
+                React.createElement(Moon, { size: 15 }),
+                " Ghost Mode",
+                red ? " — on" : ""),
+            React.createElement("button", { className: "cp-infoBtn", onClick: () => setInfo(true), "aria-label": "What Ghost Mode does", title: "What Ghost Mode does" },
+                React.createElement(Info, { size: 15 })),
+            unlocked ? (React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: onLock },
+                React.createElement(Lock, { size: 14 }),
+                " Lock ghost cases")) : ghostCount > 0 ? (React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => setPad(v => !v) },
+                React.createElement(Unlock, { size: 14 }),
+                " Unlock ghost cases")) : null),
+        pad && !unlocked && (React.createElement("div", { className: "cp-card", style: { padding: 14, marginTop: 8 } },
+            React.createElement("p", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em", margin: "0 0 6px" } }, "GHOST CASES \u2014 ENTER PIN"),
+            React.createElement("div", { className: "cp-row", style: { gap: 6 } },
+                React.createElement("input", { className: "cp-input cp-mono", style: { flex: 1, minWidth: 130, letterSpacing: ".35em" }, type: "password", inputMode: "numeric", autoComplete: "off", maxLength: 6, placeholder: "PIN", value: pin, onChange: e => setPin(e.target.value.replace(/\D/g, "").slice(0, 6)), onKeyDown: e => { if (e.key === "Enter" && pin.length >= 4)
+                        attempt(); } }),
+                React.createElement("button", { className: "cp-btn cp-btn--go", onClick: attempt, disabled: pin.length < 4 }, "Unlock"),
+                React.createElement("button", { className: "cp-btn cp-btn--ghost", onClick: closePad }, "Cancel")),
+            pinErr && React.createElement("p", { className: "cp-hint", style: { color: "var(--red)", marginTop: 8 } }, pinErr),
+            React.createElement("p", { className: "cp-hint", style: { marginTop: 8 } }, "No PIN, no cases \u2014 there is no recovery. The \u24D8 button above explains the whole thing."))),
+        info && React.createElement(GhostInfo, { onClose: () => setInfo(false) })));
+}
 function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail, locations, onSaveLocation, onDeleteLocation, backupMeta, onSnoozeBackup, onExported }) {
     const [data, setData] = useState(null);
     const [open, setOpen] = useState({ 1: true });
@@ -2024,6 +2275,11 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail, loca
     const [dbusy, setDbusy] = useState("");
     const [conflict, setConflict] = useState(null);
     const [closeNudge, setCloseNudge] = useState(false);
+    const [ghostUi, setGhostUi] = useState(null); // null | "pin1" | "pin2" | "confirm"
+    const [ghostPin, setGhostPin] = useState("");
+    const [ghostPin2, setGhostPin2] = useState("");
+    const [ghostMsg, setGhostMsg] = useState("");
+    const [ghostInfo, setGhostInfo] = useState(false);
     const saved = useRef("");
     const docCache = useRef(null);
     const dataRef = useRef(null);
@@ -2132,8 +2388,76 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail, loca
     };
     const up = useCallback(fn => setData(prev => (prev ? fn(prev) : prev)), []);
     const toggle = n => setOpen(o => ({ ...o, [n]: !o[n] }));
+    /* Ghosting this case. The first ghost on a device sets the PIN —
+       entered twice, matching, and only its salted digest is stored.
+       Ghosting itself flips the flag, then takes the case out of the
+       cloud: purged on the spot when signed in, queued for the next
+       sync when not. Then the screen leaves — a freshly ghosted case
+       is not on the list to come back to. */
+    const startGhost = async () => {
+        setGhostMsg("");
+        if (!ghostCryptoOk()) {
+            setGhostMsg("This browser cannot protect a PIN (WebCrypto is unavailable), so ghosting is switched off here.");
+            return;
+        }
+        const rec = await S.get(K.ghost);
+        setGhostUi(rec && rec.hash ? "confirm" : "pin1");
+    };
+    const pinContinue = () => {
+        if (!/^\d{4,6}$/.test(ghostPin)) {
+            setGhostMsg("A PIN is 4 to 6 digits.");
+            return;
+        }
+        setGhostMsg("");
+        setGhostUi("pin2");
+    };
+    const pinConfirm = async () => {
+        if (ghostPin2 !== ghostPin) {
+            setGhostMsg("Those don't match — start again.");
+            setGhostPin("");
+            setGhostPin2("");
+            setGhostUi("pin1");
+            return;
+        }
+        const salt = ghostSalt();
+        await S.set(K.ghost, { salt, hash: await ghostPinHash(ghostPin, salt) });
+        setGhostMsg("");
+        setGhostUi("confirm");
+    };
+    const finishGhost = async () => {
+        /* The flag goes straight to the store before this view closes.
+           The normal save path is a 650 ms debounce whose timer is
+           cleared on unmount, and ghosting leaves the screen at once —
+           a flag queued through up() alone would never reach disk. */
+        const base = dataRef.current || data;
+        if (!base)
+            return;
+        const stamped = { ...base, ghost: true, updatedAt: nowISO() };
+        saved.current = JSON.stringify(stamped);
+        setData(stamped);
+        setGhostUi(null);
+        setGhostPin("");
+        setGhostPin2("");
+        setGhostMsg("");
+        try {
+            await S.set(K.case(id), stamped);
+        }
+        catch (e) { }
+        const purged = await ghostRequestPurge(id);
+        if (!purged)
+            await ghostQueuePurge(id);
+        onBack();
+    };
+    const unghost = () => up(p => { const n = { ...p }; delete n.ghost; return n; });
+    const cancelGhost = () => { setGhostUi(null); setGhostPin(""); setGhostPin2(""); setGhostMsg(""); };
     const exportJson = async () => {
         const payload = { ...data, exportedAt: nowISO(), mediaFiles: {} };
+        /* The PIN record rides along so a restored ghost case stays
+           locked to the same PIN on the other side. Only the salted
+           digest ever travels — never the PIN itself. */
+        const grec = await S.get(K.ghost);
+        if (grec && grec.salt && grec.hash)
+            payload.ghostPin = grec;
         for (const m of data.media) {
             const rec = await S.get(K.media(id, m.id));
             if (rec)
@@ -2210,6 +2534,37 @@ function CaseDetail({ id, onBack, onSaved, gear, addGear, removeGear, rail, loca
                     React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => setCloseNudge(false) }, "Dismiss"),
                     React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: () => { setCloseNudge(false); if (onSnoozeBackup)
                             onSnoozeBackup(); } }, "Don\u2019t show for 30 days"))))),
+        React.createElement("div", { className: "cp-card", style: { padding: "12px 14px" } },
+            React.createElement("div", { className: "cp-row", style: { justifyContent: "space-between" } },
+                React.createElement("span", { className: "cp-mono", style: { fontSize: 12, letterSpacing: ".12em" } },
+                    React.createElement(Ghost, { size: 13, style: { verticalAlign: -2, marginRight: 6 } }),
+                    "GHOST CASE"),
+                React.createElement("button", { className: "cp-infoBtn", onClick: () => setGhostInfo(true), "aria-label": "What ghost cases do", title: "What ghost cases do" },
+                    React.createElement(Info, { size: 15 }))),
+            data.ghost ? (React.createElement(React.Fragment, null,
+                React.createElement("p", { className: "cp-hint" }, "This case is a ghost. It stays out of your list, your count and your search while locked, it never syncs, and its location is stripped from printed and text reports."),
+                React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: unghost }, "Remove ghost status"))) : ghostUi === null ? (React.createElement(React.Fragment, null,
+                React.createElement("p", { className: "cp-hint" }, "Make this case disappear \u2014 hidden behind a PIN, kept off the cloud, its location stripped from anything printed or shared."),
+                React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: startGhost }, "Make this a ghost case"))) : ghostUi === "pin1" ? (React.createElement(React.Fragment, null,
+                React.createElement("label", { className: "cp-label", style: { marginTop: 4 } }, "Choose a PIN for ghost cases"),
+                React.createElement("div", { className: "cp-row", style: { gap: 6 } },
+                    React.createElement("input", { className: "cp-input cp-mono", style: { flex: 1, minWidth: 130, letterSpacing: ".35em" }, type: "password", inputMode: "numeric", autoComplete: "off", maxLength: 6, placeholder: "4\u20136 digits", value: ghostPin, onChange: e => setGhostPin(e.target.value.replace(/\D/g, "").slice(0, 6)) }),
+                    React.createElement("button", { className: "cp-btn cp-btn--go", onClick: pinContinue, disabled: ghostPin.length < 4 }, "Continue"),
+                    React.createElement("button", { className: "cp-btn cp-btn--ghost", onClick: cancelGhost }, "Cancel")),
+                React.createElement("p", { className: "cp-hint", style: { marginTop: 8 } }, "You will use this PIN to unlock ghost cases on this device. There is no recovery if you forget it."))) : ghostUi === "pin2" ? (React.createElement(React.Fragment, null,
+                React.createElement("label", { className: "cp-label", style: { marginTop: 4 } }, "Type it again to confirm"),
+                React.createElement("div", { className: "cp-row", style: { gap: 6 } },
+                    React.createElement("input", { className: "cp-input cp-mono", style: { flex: 1, minWidth: 130, letterSpacing: ".35em" }, type: "password", inputMode: "numeric", autoComplete: "off", maxLength: 6, placeholder: "Same PIN again", value: ghostPin2, onChange: e => setGhostPin2(e.target.value.replace(/\D/g, "").slice(0, 6)) }),
+                    React.createElement("button", { className: "cp-btn cp-btn--go", onClick: pinConfirm, disabled: ghostPin2.length < 4 }, "Set PIN"),
+                    React.createElement("button", { className: "cp-btn cp-btn--ghost", onClick: cancelGhost }, "Cancel")))) : (React.createElement(React.Fragment, null,
+                React.createElement(Warn, null, "Ghost this case? It leaves your list, your count and your search until you unlock it with your PIN. If a copy is in your cloud space it is deleted \u2014 right now if you are signed in, or at the next sync if you are not. Printed and text reports strip its address, pins and coordinates; a JSON archive backup still holds the whole case."),
+                React.createElement("div", { className: "cp-row", style: { gap: 6, flexWrap: "wrap" } },
+                    React.createElement("button", { className: "cp-btn cp-btn--rec", onClick: finishGhost },
+                        React.createElement(Ghost, { size: 15 }),
+                        " Ghost this case"),
+                    React.createElement("button", { className: "cp-btn", onClick: cancelGhost }, "Keep it visible")))),
+            ghostMsg && React.createElement("p", { className: "cp-hint", style: { color: "var(--red)", marginTop: 8 } }, ghostMsg)),
+        ghostInfo && React.createElement(GhostInfo, { onClose: () => setGhostInfo(false) }),
         React.createElement(Section, { n: "1", title: "Pre-investigation planning", open: !!open[1], onToggle: () => toggle(1), summary: data.plan.permissionsObtained ? "permission ok" : "" },
             React.createElement(PlanSection, { v: data.plan, up: up })),
         React.createElement(Section, { n: "2", title: "Location profile", open: !!open[2], onToggle: () => toggle(2), summary: data.location.witnesses.length ? `${data.location.witnesses.length} witnesses` : "" },
@@ -2649,7 +3004,7 @@ function Nearby({ onStart, onClose }) {
                     React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: `https://maps.apple.com/?ll=${r.lat},${r.lon}&q=${encodeURIComponent(r.name)}`, target: "_blank", rel: "noreferrer" }, "Directions"),
                     r.url && (React.createElement("a", { className: "cp-btn cp-btn--sm", onClick: e => e.stopPropagation(), href: r.url, target: "_blank", rel: "noreferrer" }, "Read"))))))))));
 }
-function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone, onReclaim, onPackCase, corpus }) {
+function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup, onImport, rail, activeId, ready, onSendBackup, onCopyBackup, pasteOpen, setPasteOpen, pasted, setPasted, onRestoreText, standalone, onReclaim, onPackCase, corpus, ghostIds }) {
     const [nearby, setNearby] = useState(false);
     const [q, setQ] = useState("");
     const [desc, setDesc] = useState(true);
@@ -2752,6 +3107,9 @@ function CaseList({ index, onOpen, onNew, onDelete, loading, onArchive, onBackup
                     React.createElement("span", { className: `cp-chip cp-chip--${c.status}` }, c.status)),
                 React.createElement("div", { style: { fontSize: 16, fontWeight: 550, margin: "4px 0 2px" } }, c.title || "Untitled case"),
                 React.createElement("div", { className: "cp-hint" }, c.locationName || "No location set"),
+                ghostIds && ghostIds.has(c.id) && (React.createElement("span", { className: "cp-chip cp-chip--ghost", style: { marginTop: 6 } },
+                    React.createElement(Ghost, { size: 11 }),
+                    " GHOST")),
                 deepIds.has(c.id) && React.createElement("div", { className: "cp-hint", style: { color: "var(--amber)" } }, "Matches text inside the case"),
                 React.createElement("div", { className: "cp-hint cp-mono", style: { marginTop: 2 } }, c.date)),
             React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", title: "Export this case with its media", style: { position: "absolute", right: 52, bottom: 8 }, onClick: e => { e.stopPropagation(); onPackCase(c); } },
@@ -2840,6 +3198,28 @@ function CloudSyncPanel({ index, locations, onPulled }) {
     };
     const runSyncRef = useRef(runSync);
     runSyncRef.current = runSync;
+    /* Ghosting a case asks for its cloud copy to be removed. The panel
+       owns the client and the session, so it answers the request: purge
+       now if signed in, otherwise "not done" — and the requester queues
+       the purge for the next sync instead. */
+    useEffect(() => {
+        const onPurge = async (e) => {
+            const cid = e && e.detail && e.detail.id;
+            if (!cid)
+                return;
+            const sb = clientRef.current || sbClient();
+            const u = userRef.current;
+            let done = false;
+            if (sb && u)
+                done = await ghostPurgeCloud(sb, u, cid);
+            try {
+                window.dispatchEvent(new CustomEvent("cp-ghost-purged", { detail: { id: cid, done } }));
+            }
+            catch (err) { }
+        };
+        window.addEventListener("cp-ghost-purge", onPurge);
+        return () => window.removeEventListener("cp-ghost-purge", onPurge);
+    }, []);
     /* A fresh sign-in (or a returning one found in storage) gets one
        full sync; token refreshes for the same account do not retrigger. */
     useEffect(() => {
@@ -2993,6 +3373,9 @@ function CypherProtocol() {
     const [backupMeta, setBackupMeta] = useState(null);
     const [metaLoaded, setMetaLoaded] = useState(false);
     const [corpus, setCorpus] = useState({});
+    const [prefs, setPrefs] = useState(null);
+    const [ghostIds, setGhostIds] = useState(() => new Set());
+    const [ghostUnlocked, setGhostUnlocked] = useState(false);
     const [openNudge, setOpenNudge] = useState(false);
     const nudgeChecked = useRef(false);
     const archiveCache = useRef(null);
@@ -3000,11 +3383,12 @@ function CypherProtocol() {
     const fresh = useRef(new Set());
     useEffect(() => {
         (async () => {
-            const [i, g, locs, bm] = await Promise.all([S.get(K.index), S.get(K.gear), S.get(K.locations), S.get(K.backupMeta)]);
+            const [i, g, locs, bm, pf] = await Promise.all([S.get(K.index), S.get(K.gear), S.get(K.locations), S.get(K.backupMeta), S.get(K.prefs)]);
             setIndex(Array.isArray(i) ? i : []);
             setGear(Array.isArray(g) ? g : []);
             setLocations(Array.isArray(locs) ? locs : []);
             setBackupMeta(bm && typeof bm === "object" ? bm : null);
+            setPrefs(pf && typeof pf === "object" ? pf : { red: false });
             setMetaLoaded(true);
             setLoading(false);
             const probe = await S.set("cypher-protocol:probe", nowISO());
@@ -3070,15 +3454,21 @@ function CypherProtocol() {
         let dead = false;
         (async () => {
             const next = {};
+            const ghosts = new Set();
             for (const row of index) {
                 const c = await S.get(K.case(row.id));
                 if (dead)
                     return;
-                if (c)
+                if (c) {
                     next[row.id] = caseHaystack(c);
+                    if (c.ghost)
+                        ghosts.add(row.id);
+                }
             }
-            if (!dead)
+            if (!dead) {
                 setCorpus(next);
+                setGhostIds(ghosts);
+            }
         })();
         return () => { dead = true; };
     }, [index, openId]);
@@ -3123,6 +3513,45 @@ function CypherProtocol() {
             return next;
         });
     }, []);
+    /* Ghost Mode state. The red preference is a device setting; the
+       lock is session-only — every load starts locked, and locking
+       again is instant. While locked, ghost cases are cut out of
+       everything the list can show: rows, counts, the search corpus,
+       even the printed archive. Backups are the exception — they are
+       the private copy, and they carry ghost cases whole. */
+    const visibleIndex = useMemo(() => (ghostUnlocked ? index : index.filter(r => !ghostIds.has(r.id))), [index, ghostIds, ghostUnlocked]);
+    const visibleCorpus = useMemo(() => {
+        if (ghostUnlocked)
+            return corpus;
+        const out = {};
+        for (const [cid, hay] of Object.entries(corpus))
+            if (!ghostIds.has(cid))
+                out[cid] = hay;
+        return out;
+    }, [corpus, ghostIds, ghostUnlocked]);
+    const toggleRed = useCallback(() => {
+        setPrefs(prev => {
+            const n = { ...(prev || {}), red: !(prev && prev.red) };
+            S.set(K.prefs, n).catch(() => { });
+            return n;
+        });
+    }, []);
+    const tryGhostUnlock = useCallback(async (pin) => {
+        const okPin = await ghostPinCheck(pin);
+        /* The printed-archive cache is built from whatever was visible
+           at the time — a lock-state change invalidates it both ways. */
+        if (okPin) {
+            archiveCache.current = null;
+            setGhostUnlocked(true);
+        }
+        return okPin;
+    }, []);
+    const lockGhosts = useCallback(() => {
+        archiveCache.current = null;
+        setGhostUnlocked(false);
+        if (openId && ghostIds.has(openId))
+            setOpenId(null);
+    }, [openId, ghostIds]);
     const newCase = async (seed) => {
         const c = blankCase(nextCaseNumber(index));
         if (seed && seed.name) {
@@ -3273,9 +3702,9 @@ function CypherProtocol() {
             return;
         }
         setBusy("Assembling archive");
-        setNote(`Assembling ${index.length} case${index.length === 1 ? "" : "s"} — photos take a moment…`);
+        setNote(`Assembling ${visibleIndex.length} case${visibleIndex.length === 1 ? "" : "s"} — photos take a moment…`);
         const items = [];
-        const ordered = [...index].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+        const ordered = [...visibleIndex].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
         for (const row of ordered) {
             const c = await S.get(K.case(row.id));
             if (!c)
@@ -3313,6 +3742,9 @@ function CypherProtocol() {
         try {
             const payload = { app: "cypher-protocol", version: 1, kind: "text-only",
                 exportedAt: nowISO(), customGear: gear, locations, cases: [] };
+            const grec = await S.get(K.ghost);
+            if (grec && grec.salt && grec.hash)
+                payload.ghostPin = grec;
             for (const row of index) {
                 const c = await S.get(K.case(row.id));
                 if (c)
@@ -3352,6 +3784,9 @@ function CypherProtocol() {
             }
             const payload = { app: "cypher-protocol", version: 1, kind: "case",
                 exportedAt: nowISO(), customGear: gear, locations, cases: [{ ...c, mediaFiles }] };
+            const grec = await S.get(K.ghost);
+            if (grec && grec.salt && grec.hash)
+                payload.ghostPin = grec;
             const text = JSON.stringify(payload);
             setBusy("");
             setReady({ text, n: 1, mb: (text.length / 1048576).toFixed(1),
@@ -3489,6 +3924,17 @@ function CypherProtocol() {
             }
             catch (e) { }
         }
+        if (obj.ghostPin && obj.ghostPin.salt && obj.ghostPin.hash) {
+            /* First PIN wins: a device that already has one keeps its own;
+               a device with none adopts the backup's, so a ghost case
+               restored there stays locked to the same PIN. */
+            try {
+                const cur = await S.get(K.ghost);
+                if (!cur)
+                    await S.set(K.ghost, obj.ghostPin);
+            }
+            catch (e) { }
+        }
         await writeIndex(next);
         setNote(`Restored ${added} new case${added === 1 ? "" : "s"}, updated ${updated}, left ${skipped} alone because this device already had them or newer.` +
             (mediaFail ? ` ${mediaFail} media file${mediaFail === 1 ? "" : "s"} would not fit in storage and were not restored.` : ""));
@@ -3509,7 +3955,7 @@ function CypherProtocol() {
         }
         catch (e) { }
     };
-    return (React.createElement("div", { className: "cp-root" },
+    return (React.createElement("div", { className: "cp-root", "data-ghost": prefs && prefs.red ? "1" : "0" },
         React.createElement("style", null, APP_CSS),
         err && React.createElement("div", { className: "cp-wrap", style: { paddingTop: 10 } },
             React.createElement(Warn, null, err)),
@@ -3537,17 +3983,18 @@ function CypherProtocol() {
                         React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => { setOpenNudge(false); packText(); } }, "Back up notes now"),
                         React.createElement("button", { className: "cp-btn cp-btn--sm", onClick: () => setOpenNudge(false) }, "Dismiss"),
                         React.createElement("button", { className: "cp-btn cp-btn--sm cp-btn--ghost", onClick: snoozeBackup }, "Don\u2019t show for 30 days")))))),
+        React.createElement(GhostModeBar, { red: !!(prefs && prefs.red), onToggleRed: toggleRed, unlocked: ghostUnlocked, ghostCount: ghostIds.size, onUnlock: tryGhostUnlock, onLock: lockGhosts }),
         React.createElement(CloudSyncPanel, { index: index, locations: locations, onPulled: applyCloudPull }),
         React.createElement("input", { ref: fileIn, type: "file", accept: "application/json,.json", hidden: true, onChange: e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f)
                 restore(f); } }),
         wide ? (React.createElement("div", { className: "cp-shell" },
             React.createElement("aside", { className: "cp-rail" },
-                React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId, corpus: corpus })),
+                React.createElement(CaseList, { index: visibleIndex, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), rail: true, activeId: openId, corpus: visibleCorpus, ghostIds: ghostUnlocked ? ghostIds : null })),
             React.createElement("main", { className: "cp-detail" }, openId
                 ? React.createElement(CaseDetail, { key: openId, id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, rail: true, locations: locations, onSaveLocation: saveLocation, onDeleteLocation: deleteLocation, backupMeta: backupMeta, onSnoozeBackup: snoozeBackup, onExported: markExported })
                 : React.createElement("p", { className: "cp-empty", style: { paddingTop: 80 } }, "Pick a case on the left, or open a new one.")))) : (openId
             ? React.createElement(CaseDetail, { id: openId, onBack: () => setOpenId(null), onSaved: onSaved, gear: gear, addGear: addGear, removeGear: removeGear, locations: locations, onSaveLocation: saveLocation, onDeleteLocation: deleteLocation, backupMeta: backupMeta, onSnoozeBackup: snoozeBackup, onExported: markExported })
-            : React.createElement(CaseList, { index: index, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), corpus: corpus })),
+            : React.createElement(CaseList, { index: visibleIndex, loading: loading, onOpen: setOpenId, onNew: newCase, onDelete: c => setConfirm(c), onArchive: printArchive, onBackup: packText, onPackCase: packCase, ready: ready, onSendBackup: sendBackup, onCopyBackup: copyBackup, pasteOpen: pasteOpen, setPasteOpen: setPasteOpen, pasted: pasted, setPasted: setPasted, onRestoreText: restoreText, standalone: isStandalone(), onReclaim: reclaim, onImport: () => fileIn.current && fileIn.current.click(), corpus: visibleCorpus, ghostIds: ghostUnlocked ? ghostIds : null })),
         confirm && (React.createElement("div", { style: {
                 position: "fixed", inset: 0, background: "rgba(4,6,8,.8)", display: "grid",
                 placeItems: "center", zIndex: 60, padding: 18
